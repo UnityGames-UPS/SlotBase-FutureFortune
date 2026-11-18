@@ -1,0 +1,17 @@
+B_Robot.png
+size:823,392
+filter:Linear,Linear
+pma:true
+BONUS
+bounds:102,287,414,103
+offsets:1,1,416,105
+ROBOT BODY
+bounds:2,2,495,283
+offsets:1,2,497,286
+ROBOT HEAD
+bounds:518,79,311,303
+offsets:1,2,313,306
+rotate:90
+glow_new
+bounds:2,292,98,98
+offsets:1,1,100,103

@@ -1,0 +1,17 @@
+777.png
+size:759,230
+filter:Linear,Linear
+pma:true
+glow_new
+bounds:659,130,98,98
+offsets:1,1,100,103
+left side 7
+bounds:267,2,194,226
+offsets:1,1,196,228
+right side 7
+bounds:463,2,194,226
+offsets:1,1,196,228
+top 7
+bounds:2,3,225,263
+offsets:1,1,227,265
+rotate:90

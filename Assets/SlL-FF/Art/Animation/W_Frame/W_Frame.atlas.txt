@@ -1,0 +1,10 @@
+W_Frame.png
+size:465,396
+filter:Linear,Linear
+pma:true
+Light
+bounds:438,369,25,25
+offsets:1,1,27,27
+boder
+bounds:2,2,434,392
+offsets:1,1,436,394
