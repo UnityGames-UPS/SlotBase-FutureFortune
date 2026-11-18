@@ -10,6 +10,7 @@ public class GameManager : MonoBehaviour
     [SerializeField] private PopupManager popupManager;
     [SerializeField] private SlotView slotView;
     [SerializeField] internal WheelSpinController wheelController;
+    [SerializeField] internal NudgeController nudgeController;
 
     [Header("Spin Settings")]
     [SerializeField] private float normalSpinDuration = 3.5f;
@@ -259,7 +260,7 @@ public class GameManager : MonoBehaviour
             }
             else
             {
-                slotView.StopSpin(lastResult.resultMatrix, OnReelsStoppedComplete);
+                slotView.StopSpin(lastResult.resultMatrix, OnReelsStoppedComplete, lastResult.above, lastResult.below);
             }
         }
         else
@@ -280,6 +281,18 @@ public class GameManager : MonoBehaviour
                 balance = reelStopBalance,
                 currentBetIndex = lastResult.playerData != null ? lastResult.playerData.currentBetIndex : currentBetIndex
             };
+        }
+
+        // --- Nudge Phase Handling ---
+        if (lastResult != null && lastResult.awaitingNudge)
+        {
+            currentState = GameState.AwaitingNudge;
+            if (uiManager != null) uiManager.OnSpinStopping(lastResult);
+            if (nudgeController != null)
+            {
+                nudgeController.EnableNudgeMode(lastResult.above, lastResult.below);
+            }
+            return; // Pause here! Do NOT go to Idle, do NOT enable Spin button
         }
 
         if (lastResult != null && lastResult.winAmount > 0 && lastResult.winLines != null && lastResult.winLines.Count > 0)
@@ -510,6 +523,44 @@ public class GameManager : MonoBehaviour
                 var line = result.winLines[i];
 
             }
+        }
+
+        // If this result is the resolution of a nudge, complete the round
+        if (currentState == GameState.Stopping && !result.awaitingNudge)
+        {
+            StartCoroutine(CompleteNudgeRoutine());
+        }
+    }
+
+    private IEnumerator CompleteNudgeRoutine()
+    {
+        yield return new WaitForSeconds(0.3f);
+        if (slotView != null && lastResult != null && lastResult.resultMatrix != null)
+        {
+            slotView.UpdateMatrixAfterNudge(lastResult.resultMatrix);
+        }
+        OnReelsStoppedComplete();
+    }
+
+    public void ExecuteNudge(int reelIndex, string direction)
+    {
+        if (currentState != GameState.AwaitingNudge) return;
+
+        currentState = GameState.Stopping;
+
+        if (nudgeController != null)
+        {
+            nudgeController.DisableAllButtons();
+        }
+
+        if (slotView != null)
+        {
+            slotView.AnimateReelNudge(reelIndex, direction);
+        }
+
+        if (socketManager != null)
+        {
+            socketManager.SendNudgeRequest(reelIndex, direction);
         }
     }
 

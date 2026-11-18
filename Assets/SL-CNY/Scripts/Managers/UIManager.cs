@@ -149,6 +149,7 @@ public class UIManager : MonoBehaviour
     [Header("Game Rules Panel")]
     [SerializeField] private GameObject gameRulesPanel;
     [SerializeField] private RectTransform gameRulesPanelRect;
+    [SerializeField] private RectTransform contentRectGameRulesPanel;
     [SerializeField] private Button gameRulesOpenButton;
     [SerializeField] private Button gameRulesBackButton;
     [Header("Game Rules Panel - Portrait")]
@@ -157,6 +158,7 @@ public class UIManager : MonoBehaviour
     [Header("Guide Panel")]
     [SerializeField] private GameObject guidePanel;
     [SerializeField] private RectTransform guidePanelRect;
+    [SerializeField] private RectTransform contentRectGuidePanel;
     [SerializeField] private Button guideOpenButton;
     [SerializeField] private Button guideBackButton;
     [Header("Guide Panel - Portrait")]
@@ -174,6 +176,10 @@ public class UIManager : MonoBehaviour
     [SerializeField] private TMP_Text ruleSymbol7Text;
     [SerializeField] private TMP_Text ruleSymbol8Text;
     [SerializeField] private TMP_Text ruleSymbol9Text;
+    [SerializeField] private TMP_Text ruleSymbol10Text;
+
+    //[SerializeField] private TMP_Text ruleSymbol11Text;
+
 
     [Header("Free Spin Count Display - Game Screen")]
     [SerializeField] private GameObject freeSpinCountContainer;
@@ -1085,6 +1091,9 @@ public class UIManager : MonoBehaviour
     private void ShowGameRulesPanel()
     {
         if (gameRulesPanel == null) return;
+        Vector2 pos = contentRectGameRulesPanel.anchoredPosition;
+        pos.y = 0f;
+        contentRectGameRulesPanel.anchoredPosition = pos;
         gameRulesPanel.SetActive(true);
     }
 
@@ -1110,6 +1119,9 @@ public class UIManager : MonoBehaviour
     private void ShowGuidePanel()
     {
         if (guidePanel == null) return;
+        Vector2 pos = contentRectGuidePanel.anchoredPosition;
+        pos.y = 0f;
+        contentRectGuidePanel.anchoredPosition = pos;
         guidePanel.SetActive(true);
     }
 
@@ -1380,7 +1392,7 @@ public class UIManager : MonoBehaviour
         TMP_Text[] symbolTexts = {
             ruleSymbol0Text, ruleSymbol1Text, ruleSymbol2Text, ruleSymbol3Text,
             ruleSymbol4Text, ruleSymbol5Text, ruleSymbol6Text, ruleSymbol7Text,
-            ruleSymbol8Text, ruleSymbol9Text
+            ruleSymbol8Text, ruleSymbol9Text, ruleSymbol10Text
         };
 
         if (gameManager.gameConfig.symbols != null)

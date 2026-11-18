@@ -171,6 +171,11 @@ public class ServerPayload
     public ServerUSpinResult uSpin;
     public ServerMoneyBagResult moneyBag;
     public ServerFreeGamesResult freeGames;
+
+    // Future Fortune Nudge fields
+    public List<int> above;
+    public List<int> below;
+    public bool awaitingNudge;
 }
 
 [Serializable]
@@ -267,6 +272,20 @@ public class JackpotOpenPayload
   public string tier;
 }
 
+[Serializable]
+public class NudgeRequest
+{
+    public string type = "NUDGE";
+    public NudgePayload payload;
+}
+
+[Serializable]
+public class NudgePayload
+{
+    public int reel;
+    public string direction;
+}
+
 
 #endregion
 
@@ -346,6 +365,11 @@ public class SpinResult
     // Server-authoritative wheel data
     public USpinResultData uSpinData;
     public MoneyBagResultData moneyBagData;
+
+    // Future Fortune Nudge fields
+    public List<int> above;
+    public List<int> below;
+    public bool awaitingNudge;
 
     public double GetMoneyBagWin()
     {
@@ -441,6 +465,7 @@ public enum GameState
     Idle,
     Spinning,
     Stopping,
+    AwaitingNudge,
     ShowingWin,
     FreeSpinMode
 }
@@ -582,10 +607,13 @@ public static class InitDataConverter
 
         var result = new SpinResult
         {
-            resultMatrix = ConvertReelsToMatrix(serverResponse.payload.reels, serverResponse.matrix, serverResponse.payload.waysWins, gameConfig),
+            resultMatrix = ConvertReelsToMatrix(serverResponse.payload?.reels, serverResponse.matrix, serverResponse.payload?.waysWins, gameConfig),
             winAmount = winAmountVal,
             grandTotalWin = grandTotalWinVal,
-            winLines = ConvertWinningLines(serverResponse.payload.waysWins, gameConfig),
+            winLines = ConvertWinningLines(serverResponse.payload?.waysWins, gameConfig),
+            above = serverResponse.payload?.above,
+            below = serverResponse.payload?.below,
+            awaitingNudge = serverResponse.payload != null && serverResponse.payload.awaitingNudge,
 
             playerData = new PlayerData
             {

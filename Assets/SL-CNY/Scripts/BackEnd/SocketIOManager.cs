@@ -5,6 +5,7 @@ using UnityEngine;
 using Best.SocketIO;
 using Best.SocketIO.Events;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEngine.UI;
 
 public class SocketIOManager : MonoBehaviour
@@ -347,20 +348,25 @@ public class SocketIOManager : MonoBehaviour
 
   private void OnResultReceived(string jsonData)
   {
-    if (!jsonData.Contains("\"id\":\"ResultData\""))
-    {
-      return;
-    }
-
-    Debug.Log($"[SocketIO] Result received: {jsonData}");
+    if (string.IsNullOrEmpty(jsonData)) return;
 
     try
     {
-      var serverResponse = JsonConvert.DeserializeObject<ServerSpinResponse>(jsonData);
+      var json = JObject.Parse(jsonData);
+      string messageId = json["id"]?.ToString();
 
-      if (!serverResponse.success)
+      if (messageId != "ResultData" && messageId != "NudgeData")
       {
-        Debug.LogError("[SocketIO] Spin failed");
+        return;
+      }
+
+      Debug.Log($"[SocketIO] Result received ({messageId}): {jsonData}");
+
+      var serverResponse = json.ToObject<ServerSpinResponse>();
+
+      if (serverResponse == null || !serverResponse.success)
+      {
+        Debug.LogError("[SocketIO] Spin failed or response was null");
         return;
       }
 
@@ -610,6 +616,24 @@ public class SocketIOManager : MonoBehaviour
       {
         betIndex = betIndex,
         isFreeSpin = isFreeSpin
+      }
+    };
+
+    string json = JsonUtility.ToJson(request);
+    gameSocket.Emit("request", json);
+  }
+
+  internal void SendNudgeRequest(int reelIndex, string direction)
+  {
+    Debug.Log($"[SocketIO] Sending Nudge request: reel={reelIndex}, direction={direction}");
+
+    var request = new NudgeRequest
+    {
+      type = "NUDGE",
+      payload = new NudgePayload
+      {
+        reel = reelIndex,
+        direction = direction
       }
     };
 

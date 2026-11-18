@@ -100,6 +100,8 @@ public class SlotView : MonoBehaviour
 
 
     internal List<List<int>> currentDisplayMatrix;
+    private List<int> currentAbove;
+    private List<int> currentBelow;
 
     private bool isSpinning;
 
@@ -277,7 +279,7 @@ public class SlotView : MonoBehaviour
 
     #region Symbol Display
 
-    private void SetReelSymbols(int columnIndex, List<int> visibleSymbolIds, bool isInitial = false)
+    private void SetReelSymbols(int columnIndex, List<int> visibleSymbolIds, bool isInitial = false, int? aboveSymbolId = null, int? belowSymbolId = null)
     {
         if (columnIndex >= reelImagesList.Count)
         {
@@ -320,6 +322,16 @@ public class SlotView : MonoBehaviour
         for (int i = visibleStartIndex + rowCount; i < reel.images.Count; i++)
         {
             reel.images[i].sprite = GetSymbolSprite(Random.Range(0, 10));
+        }
+
+        // Future Fortune Nudge: Buffer exact above and below symbols
+        if (aboveSymbolId.HasValue && visibleStartIndex - 1 >= 0)
+        {
+            reel.images[visibleStartIndex - 1].sprite = GetSymbolSprite(aboveSymbolId.Value);
+        }
+        if (belowSymbolId.HasValue && visibleStartIndex + rowCount < reel.images.Count)
+        {
+            reel.images[visibleStartIndex + rowCount].sprite = GetSymbolSprite(belowSymbolId.Value);
         }
 
         if (isInitial && reelTransforms[columnIndex] != null)
@@ -484,14 +496,19 @@ public class SlotView : MonoBehaviour
 
     #region Stop Spin
 
-    internal void StopSpin(List<List<int>> resultMatrix, System.Action onComplete)
+    internal void StopSpin(List<List<int>> resultMatrix, System.Action onComplete, List<int> above = null, List<int> below = null)
     {
+        currentAbove = above;
+        currentBelow = below;
+
         if (!isSpinning)
         {
             currentDisplayMatrix = resultMatrix;
             for (int col = 0; col < 5; col++)
             {
-                SetReelSymbols(col, resultMatrix[col], false);
+                int? aboveSym = (currentAbove != null && col < currentAbove.Count) ? (int?)currentAbove[col] : null;
+                int? belowSym = (currentBelow != null && col < currentBelow.Count) ? (int?)currentBelow[col] : null;
+                SetReelSymbols(col, resultMatrix[col], false, aboveSym, belowSym);
             }
             onComplete?.Invoke();
             return;
@@ -559,7 +576,9 @@ public class SlotView : MonoBehaviour
 
         Transform slotTransform = reelTransforms[columnIndex];
 
-        SetReelSymbols(columnIndex, targetSymbols, false);
+        int? aboveSym = (currentAbove != null && columnIndex < currentAbove.Count) ? (int?)currentAbove[columnIndex] : null;
+        int? belowSym = (currentBelow != null && columnIndex < currentBelow.Count) ? (int?)currentBelow[columnIndex] : null;
+        SetReelSymbols(columnIndex, targetSymbols, false, aboveSym, belowSym);
 
         float currentY = slotTransform.localPosition.y;
         float targetY = middlePosition;
@@ -655,6 +674,42 @@ public class SlotView : MonoBehaviour
 
         StartCoroutine(StopSpinSequence(resultMatrix, onComplete, true));
     }
+
+    #region Interactive Nudge
+
+    internal void AnimateReelNudge(int columnIndex, string direction, System.Action onComplete = null)
+    {
+        if (columnIndex < 0 || columnIndex >= reelTransforms.Length) return;
+
+        Transform slotTransform = reelTransforms[columnIndex];
+        float currentY = slotTransform.localPosition.y;
+
+        // "lower" moves reel down (bringing 'above' symbol into view)
+        // "raise" moves reel up (bringing 'below' symbol into view)
+        bool isLower = !string.IsNullOrEmpty(direction) && direction.ToLower().Contains("lower");
+        float shift = isLower ? -symbolHeight : symbolHeight;
+        float targetY = currentY + shift;
+        float overshoot = isLower ? -15f : 15f;
+
+        Sequence nudgeSeq = DOTween.Sequence();
+        nudgeSeq.Append(slotTransform.DOLocalMoveY(targetY + overshoot, 0.16f).SetEase(Ease.OutQuad));
+        nudgeSeq.Append(slotTransform.DOLocalMoveY(targetY, 0.10f).SetEase(Ease.InOutSine));
+        nudgeSeq.OnComplete(() =>
+        {
+            AudioManager.Instance?.PlayReelStop();
+            onComplete?.Invoke();
+        });
+    }
+
+    internal void UpdateMatrixAfterNudge(List<List<int>> newMatrix)
+    {
+        if (newMatrix != null)
+        {
+            currentDisplayMatrix = newMatrix;
+        }
+    }
+
+    #endregion
 
     #endregion
 
