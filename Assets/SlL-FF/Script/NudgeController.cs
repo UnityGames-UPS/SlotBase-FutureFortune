@@ -25,7 +25,7 @@ public class NudgeController : MonoBehaviour
     [Tooltip("Target reel index for each Lower button (Default: 0, 1, 2)")]
     [SerializeField] private int[] lowerReelIndices = new int[] { 0, 1, 2 };
 
-    [Header("Optional Frame Sprites (Visual Feedback)")]
+    /*[Header("Optional Frame Sprites (Visual Feedback)")]
     [Tooltip("raiseframe.png")]
     [SerializeField] private Sprite raiseNormalSprite;
     [Tooltip("raiseframegreen.png")]
@@ -33,7 +33,7 @@ public class NudgeController : MonoBehaviour
     [Tooltip("lowerframe.png")]
     [SerializeField] private Sprite lowerNormalSprite;
     [Tooltip("lowerframegreen.png")]
-    [SerializeField] private Sprite lowerActiveGreenSprite;
+    [SerializeField] private Sprite lowerActiveGreenSprite;*/
 
     [Header("Optional UI Elements")]
     [Tooltip("Parent GameObject or container for the nudge controls to show/hide during nudge phase")]
@@ -125,7 +125,7 @@ public class NudgeController : MonoBehaviour
                 btn.interactable = active;
                 btn.gameObject.SetActive(active);
 
-                // Swap to green active frame when active
+               /* // Swap to green active frame when active
                 if (btn.image != null)
                 {
                     if (active && raiseActiveGreenSprite != null)
@@ -136,7 +136,7 @@ public class NudgeController : MonoBehaviour
                     {
                         btn.image.sprite = raiseNormalSprite;
                     }
-                }
+                }*/
             }
         }
 
@@ -152,7 +152,7 @@ public class NudgeController : MonoBehaviour
                 btn.gameObject.SetActive(active);
 
                 // Swap to green active frame when active
-                if (btn.image != null)
+               /* if (btn.image != null)
                 {
                     if (active && lowerActiveGreenSprite != null)
                     {
@@ -162,7 +162,7 @@ public class NudgeController : MonoBehaviour
                     {
                         btn.image.sprite = lowerNormalSprite;
                     }
-                }
+                }*/
             }
         }
     }

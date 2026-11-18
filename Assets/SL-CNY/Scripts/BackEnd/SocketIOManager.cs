@@ -315,7 +315,7 @@ public class SocketIOManager : MonoBehaviour
       var initData = JsonConvert.DeserializeObject<InitData>(jsonData);
       var gameConfig = InitDataConverter.ConvertToGameConfig(initData);
       var playerData = InitDataConverter.ConvertToPlayerData(initData.player);
-      var initialMatrix = GenerateRandomMatrix(gameConfig.rowCount);
+      var initialMatrix = GenerateRandomMatrix(gameConfig.rowCount, gameConfig.symbolCount, gameConfig.scatterSymbolId);
 
       isInitialized = true;
 
@@ -629,9 +629,10 @@ public class SocketIOManager : MonoBehaviour
 
     var request = new NudgeRequest
     {
-      type = "NUDGE",
+      type = "BONUS",
       payload = new NudgePayload
       {
+        Event = "nudge",
         reel = reelIndex,
         direction = direction
       }
@@ -711,7 +712,7 @@ public class SocketIOManager : MonoBehaviour
   }
 
   #endregion
-  private List<List<int>> GenerateRandomMatrix(int rowCount)
+  private List<List<int>> GenerateRandomMatrix(int rowCount, int symbolCount = 11, int excludeId = -1)
   {
     var matrix = new List<List<int>>();
     for (int col = 0; col < 5; col++)
@@ -719,7 +720,9 @@ public class SocketIOManager : MonoBehaviour
       var column = new List<int>();
       for (int row = 0; row < rowCount; row++)
       {
-        column.Add(UnityEngine.Random.Range(0, 10));
+        int id;
+        do { id = UnityEngine.Random.Range(0, symbolCount); } while (id == excludeId && symbolCount > 1);
+        column.Add(id);
       }
       matrix.Add(column);
     }

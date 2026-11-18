@@ -140,9 +140,10 @@ public class SymbolInfoCard : MonoBehaviour
         string symbolNameLower = symbolInfo != null ? (symbolInfo.name ?? "").ToLower() : "";
 
         // Check if special symbol: Wild (ID 10), USpin (ID 11), MoneyBag (ID 12)
-        bool isWild = (symbolId == 10) || (symbolInfo != null && symbolInfo.isWild) || symbolNameLower.Contains("wild");
-        bool isUSpin = (symbolId == 11) || symbolNameLower.Contains("uspin");
-        bool isMoneyBag = (symbolId == 12) || symbolNameLower.Contains("moneybag") || symbolNameLower.Contains("money bag");
+        // FF: decide by server data, never by hard-coded IDs (ID 10 is BAR in Future Fortune)
+        bool isWild = (symbolInfo != null && symbolInfo.isWild) || symbolNameLower.Contains("wild");
+        bool isUSpin = symbolNameLower.Contains("uspin");
+        bool isMoneyBag = symbolNameLower.Contains("moneybag") || symbolNameLower.Contains("money bag");
 
         if (isWild || isUSpin || isMoneyBag)
         {

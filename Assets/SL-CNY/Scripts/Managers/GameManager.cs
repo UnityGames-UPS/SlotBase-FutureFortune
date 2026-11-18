@@ -54,6 +54,11 @@ public class GameManager : MonoBehaviour
 
     private void Start()
     {
+        if (nudgeController == null)
+        {
+            nudgeController = FindFirstObjectByType<NudgeController>();
+        }
+
         currentState = GameState.Initializing;
         currentSpinSpeed = SpinSpeed.Normal;
         waitingForFreeSpinStart = false;
@@ -841,13 +846,13 @@ public class GameManager : MonoBehaviour
 
     /// <summary>
     /// Returns true if at least one scatter symbol appears anywhere in the result matrix.
-    /// Uses the server-configured scatterSymbolId (default 12) as the reference ID.
+    /// Uses the server-configured scatterSymbolId (FF: Bonus = 4) as the reference ID.
     /// </summary>
     private bool ResultMatrixHasScatter(List<List<int>> matrix)
     {
         if (matrix == null) return false;
 
-        int scatterId = gameConfig != null ? gameConfig.scatterSymbolId : 12;
+        int scatterId = gameConfig != null ? gameConfig.scatterSymbolId : -1;
 
         foreach (var col in matrix)
         {

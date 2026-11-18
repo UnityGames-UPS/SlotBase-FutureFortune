@@ -9,29 +9,25 @@ public class SlotView : MonoBehaviour
     [Header("References")]
     [SerializeField] private GameManager gameManager;
 
-    [Header("Symbol Sprites - Assign by Name")]
-    [SerializeField] private Sprite spriteLantern;           // ID: 0
-    [SerializeField] private Sprite spriteHammer;            // ID: 1
-    [SerializeField] private Sprite spriteMoneyPouch;         // ID: 2
-    [SerializeField] private Sprite spriteCoin;              // ID: 3
-    [SerializeField] private Sprite spriteA;                 // ID: 4
-    [SerializeField] private Sprite spriteK;                 // ID: 5
-    [SerializeField] private Sprite spriteQ;                 // ID: 6
-    [SerializeField] private Sprite spriteJ;                 // ID: 7
-    [SerializeField] private Sprite spriteTen;               // ID: 8
-    [SerializeField] private Sprite spriteNine;              // ID: 9
-    [SerializeField] private Sprite spriteWild;              // ID: 10
-    [SerializeField] private Sprite spriteUSpin;             // ID: 11
-    [SerializeField] private Sprite spriteMoneyBag;          // ID: 12
+    [Header("Future Fortune Symbol Sprites - IDs match server initData")]
+    [SerializeField] private Sprite spriteDiamondShot;       // ID: 0  DiamondShot
+    [SerializeField] private Sprite spriteDiamond;           // ID: 1  Diamond
+    [SerializeField] private Sprite spritePilot;             // ID: 2  Pilot (blonde)
+    [SerializeField] private Sprite spriteSeven3;            // ID: 3  777
+    [SerializeField] private Sprite spriteBonus;             // ID: 4  Bonus / Shooting Star (scatter)
+    [SerializeField] private Sprite spriteSeven2;            // ID: 5  77
+    [SerializeField] private Sprite spriteSeven;             // ID: 6  7
+    [SerializeField] private Sprite spriteScout;             // ID: 7  Scout (green-hair)
+    [SerializeField] private Sprite spriteBar5;              // ID: 8  B5R
+    [SerializeField] private Sprite spriteBar3;              // ID: 9  B3R
+    [SerializeField] private Sprite spriteBar;               // ID: 10 BAR
+
+    private const int SymbolCount = 11;
 
     // Internal array built from named sprites
     private Sprite[] symbolSprites;
 
-    [Header("Win Animation Sprite Arrays")]
-    [Tooltip("Animation sprite arrays for symbols. USpin = ID 11")]
-    [SerializeField] private List<Sprite> animSpritesUSpin;           // ID: 11
-
-    // Internal array of animation sprite lists
+    // Win animation sprite sequences (FF uses Spine later; CNY USpin slot kept at index 11 for legacy code)
     private List<Sprite>[] animationSpriteArrays;
 
     [Header("Reel Containers")]
@@ -205,23 +201,19 @@ public class SlotView : MonoBehaviour
 
     private void BuildSymbolSpriteArray()
     {
-        // Build the symbol sprite array from named sprite fields
-        symbolSprites = new Sprite[13];
-        symbolSprites[0] = spriteLantern;
-        symbolSprites[1] = spriteHammer;
-        symbolSprites[2] = spriteMoneyPouch;
-        symbolSprites[3] = spriteCoin;
-        symbolSprites[4] = spriteA;
-        symbolSprites[5] = spriteK;
-        symbolSprites[6] = spriteQ;
-        symbolSprites[7] = spriteJ;
-        symbolSprites[8] = spriteTen;
-        symbolSprites[9] = spriteNine;
-        symbolSprites[10] = spriteWild;
-        symbolSprites[11] = spriteUSpin;
-        symbolSprites[12] = spriteMoneyBag;
+        symbolSprites = new Sprite[SymbolCount];
+        symbolSprites[0] = spriteDiamondShot;
+        symbolSprites[1] = spriteDiamond;
+        symbolSprites[2] = spritePilot;
+        symbolSprites[3] = spriteSeven3;
+        symbolSprites[4] = spriteBonus;
+        symbolSprites[5] = spriteSeven2;
+        symbolSprites[6] = spriteSeven;
+        symbolSprites[7] = spriteScout;
+        symbolSprites[8] = spriteBar5;
+        symbolSprites[9] = spriteBar3;
+        symbolSprites[10] = spriteBar;
 
-        // Validate
         for (int i = 0; i < symbolSprites.Length; i++)
         {
             if (symbolSprites[i] == null)
@@ -231,9 +223,8 @@ public class SlotView : MonoBehaviour
         }
 
         // Build the animation sprite arrays
-        animationSpriteArrays = new List<Sprite>[13];
-        // Only USpin has an animation in this game
-        animationSpriteArrays[11] = animSpritesUSpin;
+        // Sized 13 so legacy CNY code that indexes [11] cannot go out of range; FF entries stay empty for now
+        animationSpriteArrays = new List<Sprite>[Mathf.Max(SymbolCount, 13)];
     }
 
     private void InitializeReels()
@@ -316,12 +307,12 @@ public class SlotView : MonoBehaviour
 
         for (int i = 0; i < visibleStartIndex; i++)
         {
-            reel.images[i].sprite = GetSymbolSprite(Random.Range(0, 10));
+            reel.images[i].sprite = GetSymbolSprite(RandomFillerSymbolId());
         }
 
         for (int i = visibleStartIndex + rowCount; i < reel.images.Count; i++)
         {
-            reel.images[i].sprite = GetSymbolSprite(Random.Range(0, 10));
+            reel.images[i].sprite = GetSymbolSprite(RandomFillerSymbolId());
         }
 
         // Future Fortune Nudge: Buffer exact above and below symbols
@@ -342,6 +333,18 @@ public class SlotView : MonoBehaviour
                 0
             );
         }
+    }
+
+    /// <summary>
+    /// Random symbol for off-screen / spinning filler. Never the Bonus (scatter),
+    /// so filler can't look like a free-game trigger.
+    /// </summary>
+    private int RandomFillerSymbolId()
+    {
+        int scatterId = (gameManager != null && gameManager.gameConfig != null) ? gameManager.gameConfig.scatterSymbolId : 4;
+        int id;
+        do { id = Random.Range(0, SymbolCount); } while (id == scatterId);
+        return id;
     }
 
     private Sprite GetSymbolSprite(int symbolId)
@@ -489,7 +492,7 @@ public class SlotView : MonoBehaviour
             reel.images[i].sprite = reel.images[i - 1].sprite;
         }
 
-        reel.images[0].sprite = GetSymbolSprite(Random.Range(0, 10));
+        reel.images[0].sprite = GetSymbolSprite(RandomFillerSymbolId());
     }
 
     #endregion
@@ -598,7 +601,7 @@ public class SlotView : MonoBehaviour
         if (currentDisplayMatrix != null && columnIndex < currentDisplayMatrix.Count)
         {
             bool hasWild = false;
-            int wildId = gameManager?.gameConfig != null ? gameManager.gameConfig.wildSymbolId : 10;
+            int wildId = gameManager?.gameConfig != null ? gameManager.gameConfig.wildSymbolId : -1;
             foreach (int sym in currentDisplayMatrix[columnIndex])
             {
                 if (sym == wildId) hasWild = true;
@@ -722,7 +725,7 @@ public class SlotView : MonoBehaviour
         for (int row = 0; row < currentDisplayMatrix[col].Count; row++)
         {
             int symId = currentDisplayMatrix[col][row];
-            int wildId = gameManager?.gameConfig != null ? gameManager.gameConfig.wildSymbolId : 10;
+            int wildId = gameManager?.gameConfig != null ? gameManager.gameConfig.wildSymbolId : -1;
             bool isWild = (symId == wildId);
             
             if (isWild)

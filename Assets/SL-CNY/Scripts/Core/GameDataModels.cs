@@ -124,6 +124,7 @@ public class ServerSymbolInfo
     public List<double> payout;
     public string description;
     public int minMatch;
+    public string group;           // FF: premium / high / mid / low / scatter
 }
 
 
@@ -275,15 +276,16 @@ public class JackpotOpenPayload
 [Serializable]
 public class NudgeRequest
 {
-    public string type = "NUDGE";
+    public string type = "BONUS";      // FF server: nudge is sent as a BONUS action
     public NudgePayload payload;
 }
 
 [Serializable]
 public class NudgePayload
 {
-    public int reel;
-    public string direction;
+    public string Event = "nudge";     // server field name is "Event" (capital E)
+    public int reel;                   // 0-based reel index
+    public string direction;           // "raise" or "lower"
 }
 
 
@@ -296,17 +298,17 @@ public class GameConfig
 {
     public int reelCount = 5;
     public int rowCount = 3;
-    public int symbolCount = 13;
+    public int symbolCount = 11;      // FF: 11 symbols (0-10)
     public int paylineCount = 243;
     public List<List<int>> paylines;
     public List<double> availableBets;
     public List<SymbolInfo> symbols;
 
     // Wild configuration
-    public int wildSymbolId = 10;      // Base wild (10)
+    public int wildSymbolId = -1;      // FF: no wild symbol
 
     // Scatter configuration
-    public int scatterSymbolId = 11;   // USpin is ID 11
+    public int scatterSymbolId = 4;    // FF: Bonus (Shooting Star) is ID 4
 
     public int betMultiplier = 1;      // CNY is cash-bet based, multiplier default is 1
     public double creditDivisor = 25;  // Credit divisor sent in initData
@@ -516,9 +518,11 @@ public static class InitDataConverter
                 id = serverSymbol.id,
                 name = serverSymbol.name,
                 multipliers = new List<double>(),
-                isWild = serverSymbol.name.ToLower().Contains("wild"),
-                isScatter = serverSymbol.name.ToLower().Contains("scatter") || 
-                            serverSymbol.name.ToLower().Contains("uspin") || 
+                isWild = serverSymbol.name.ToLower().Contains("wild") || serverSymbol.group == "wild",
+                isScatter = serverSymbol.group == "scatter" ||
+                            serverSymbol.name.ToLower().Contains("scatter") ||
+                            serverSymbol.name.ToLower().Contains("bonus") ||
+                            serverSymbol.name.ToLower().Contains("uspin") ||
                             serverSymbol.name.ToLower().Contains("moneybag"),
                 minMatch = serverSymbol.minMatch
             };
@@ -537,7 +541,9 @@ public static class InitDataConverter
             {
                 config.wildSymbolId = symbolInfo.id;
             }
-            if (symbolInfo.isScatter && symbolInfo.name.ToLower().Contains("uspin"))
+            if (symbolInfo.isScatter && (serverSymbol.group == "scatter" ||
+                                         symbolInfo.name.ToLower().Contains("bonus") ||
+                                         symbolInfo.name.ToLower().Contains("uspin")))
             {
                 config.scatterSymbolId = symbolInfo.id;
             }
