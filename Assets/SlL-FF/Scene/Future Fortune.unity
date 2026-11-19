@@ -8683,7 +8683,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &436267422
 RectTransform:
   m_ObjectHideFlags: 0
@@ -34134,7 +34134,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::NudgeController
   gameManager: {fileID: 1123307176}
-  slotView: {fileID: 0}
+  slotView: {fileID: 1398213258}
   raiseButtons:
   - {fileID: 1505107593}
   - {fileID: 1852099256}
