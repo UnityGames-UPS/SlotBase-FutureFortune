@@ -280,6 +280,13 @@ public class SocketIOManager : MonoBehaviour
   {
     Debug.LogError($"[SocketIO] Error: {err.message}");
 
+    // FF: Task 4 - Handle socket error during nudge phase
+    if (gameManager != null && (gameManager.currentState == GameState.AwaitingNudge || gameManager.IsNudgePending))
+    {
+      gameManager.HandleNudgeFailure("Nudge failed. Please try again.");
+      return;
+    }
+
     if (!gameManager.isInitialized)
     {
       gameManager.initializationFailed = true;

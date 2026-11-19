@@ -667,6 +667,35 @@ public class UIManager : MonoBehaviour
         SetSpinStopButtonStates(isSpinningState: false, isInteractable: false);
     }
 
+    // FF: Task 5 - Lock input while nudging (spin, bet +/-, autoplay, settings)
+    internal void DisableControlsForNudge(bool isAutoPlaying)
+    {
+        SetBetControlsEnabled(false);
+        SetButtonInteractable(settingsOpenButton, settingsOpenButtonPortrait, false);
+        CloseSettingsPanelImmediate();
+        CloseAutoPlayPanelImmediate();
+
+        if (isAutoPlaying)
+        {
+            // Allow stopping autoplay during the 0.7s wait
+            SetButtonActive(autoSpinStopButton, autoSpinStopButtonPortrait, true);
+            SetButtonInteractable(autoSpinStopButton, autoSpinStopButtonPortrait, true);
+        }
+        else
+        {
+            SetSpinStopButtonStates(isSpinningState: false, isInteractable: false);
+        }
+    }
+
+    // FF: Task 5 - Lock all controls completely during nudge execution
+    internal void LockAllControlsForNudgeExecution()
+    {
+        SetBetControlsEnabled(false);
+        SetButtonInteractable(settingsOpenButton, settingsOpenButtonPortrait, false);
+        SetSpinStopButtonStates(isSpinningState: false, isInteractable: false);
+        SetButtonInteractable(autoSpinStopButton, autoSpinStopButtonPortrait, false);
+    }
+
     internal void EnableControlsAfterWinAnimation()
     {
         if (isSpecialWinActive) return;

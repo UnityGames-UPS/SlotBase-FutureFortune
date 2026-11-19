@@ -7,8 +7,9 @@ public class GameManager : MonoBehaviour
     [Header("References")]
     [SerializeField] internal SocketIOManager socketManager;
     [SerializeField] internal UIManager uiManager;
-    [SerializeField] private PopupManager popupManager;
-    [SerializeField] private SlotView slotView;
+    [SerializeField] internal PopupManager popupManager;
+    [SerializeField] internal SlotView slotView;
+    public SlotView SlotView => slotView;
     [SerializeField] internal WheelSpinController wheelController;
     [SerializeField] internal NudgeController nudgeController;
 
@@ -49,6 +50,15 @@ public class GameManager : MonoBehaviour
     private Coroutine spinCoroutine;
     private bool stopRequested;
     private bool waitingForSpecialWin;
+
+    // FF: Nudge synchronization flags, references, and coroutines
+    private bool nudgeAnimDone;
+    private bool nudgeResponseDone;
+    private int nudgedReelIndex = -1;
+    private Coroutine completeNudgeCoroutine;
+    private Coroutine nudgeTimeoutCoroutine;
+    private Coroutine autoNudgeCoroutine;
+    internal bool IsNudgePending => nudgeTimeoutCoroutine != null || completeNudgeCoroutine != null;
 
     #region Initialization
 
@@ -292,11 +302,25 @@ public class GameManager : MonoBehaviour
         if (lastResult != null && lastResult.awaitingNudge)
         {
             currentState = GameState.AwaitingNudge;
-            if (uiManager != null) uiManager.OnSpinStopping(lastResult);
+            if (uiManager != null)
+            {
+                uiManager.OnSpinStopping(lastResult);
+                // FF: Task 5 - Lock spin, bet, settings during nudge phase
+                uiManager.DisableControlsForNudge(isAutoPlaying);
+            }
+
             if (nudgeController != null)
             {
                 nudgeController.EnableNudgeMode(lastResult.above, lastResult.below);
             }
+
+            // FF: Task 3 - Autoplay auto-nudge after 0.7s delay
+            if (isAutoPlaying)
+            {
+                if (autoNudgeCoroutine != null) StopCoroutine(autoNudgeCoroutine);
+                autoNudgeCoroutine = StartCoroutine(AutoNudgeRoutine());
+            }
+
             return; // Pause here! Do NOT go to Idle, do NOT enable Spin button
         }
 
@@ -530,42 +554,189 @@ public class GameManager : MonoBehaviour
             }
         }
 
-        // If this result is the resolution of a nudge, complete the round
+        // FF: Task 2 & Task 4 - If this result is the resolution of a nudge, signal response received
         if (currentState == GameState.Stopping && !result.awaitingNudge)
         {
-            StartCoroutine(CompleteNudgeRoutine());
+            if (nudgeTimeoutCoroutine != null)
+            {
+                StopCoroutine(nudgeTimeoutCoroutine);
+                nudgeTimeoutCoroutine = null;
+            }
+
+            nudgeResponseDone = true;
         }
     }
 
+    // FF: Task 2 - Wait until BOTH the nudge animation has completed AND the NudgeData response has arrived,
+    // then redraw/snap, then OnReelsStoppedComplete(). Works in either arrival order.
     private IEnumerator CompleteNudgeRoutine()
     {
-        yield return new WaitForSeconds(0.3f);
+        while (!nudgeAnimDone || !nudgeResponseDone)
+        {
+            yield return null;
+        }
+
+        completeNudgeCoroutine = null;
+
         if (slotView != null && lastResult != null && lastResult.resultMatrix != null)
         {
+            // Redraw nudged reel symbols and snap localPosition.y to middlePosition in the same frame
+            if (nudgedReelIndex >= 0 && nudgedReelIndex < lastResult.resultMatrix.Count)
+            {
+                slotView.SnapNudgedReel(nudgedReelIndex, lastResult.resultMatrix[nudgedReelIndex]);
+            }
             slotView.UpdateMatrixAfterNudge(lastResult.resultMatrix);
         }
+
         OnReelsStoppedComplete();
     }
 
+    // FF: Task 2, Task 4, Task 5 - Execute nudge with animation sync, safety timeout, and debounce
     public void ExecuteNudge(int reelIndex, string direction)
     {
         if (currentState != GameState.AwaitingNudge) return;
 
         currentState = GameState.Stopping;
+        nudgeAnimDone = false;
+        nudgeResponseDone = false;
+        nudgedReelIndex = reelIndex;
+
+        // FF: Task 3 - Cancel pending auto-nudge coroutine if any
+        if (autoNudgeCoroutine != null)
+        {
+            StopCoroutine(autoNudgeCoroutine);
+            autoNudgeCoroutine = null;
+        }
+
+        // FF: Task 1 & 5 - Immediately disable buttons to debounce spam-tapping
+        if (nudgeController != null)
+        {
+            nudgeController.DisableAllButtons();
+        }
+
+        // FF: Task 5 - Lock all controls completely during nudge execution
+        if (uiManager != null)
+        {
+            uiManager.LockAllControlsForNudgeExecution();
+        }
+
+        // FF: Task 2 - Animate reel nudge (~0.25s total)
+        if (slotView != null)
+        {
+            slotView.AnimateReelNudge(reelIndex, direction, () =>
+            {
+                nudgeAnimDone = true;
+            });
+        }
+        else
+        {
+            nudgeAnimDone = true;
+        }
+
+        // FF: Send nudge request to server
+        if (socketManager != null)
+        {
+            socketManager.SendNudgeRequest(reelIndex, direction);
+        }
+
+        // FF: Task 4 - Start 5s safety timeout
+        if (nudgeTimeoutCoroutine != null)
+        {
+            StopCoroutine(nudgeTimeoutCoroutine);
+        }
+        nudgeTimeoutCoroutine = StartCoroutine(NudgeTimeoutRoutine(5.0f));
+
+        // FF: Task 2 - Start routine waiting for BOTH animation and server response
+        if (completeNudgeCoroutine != null)
+        {
+            StopCoroutine(completeNudgeCoroutine);
+        }
+        completeNudgeCoroutine = StartCoroutine(CompleteNudgeRoutine());
+    }
+
+    // FF: Task 3 - Autoplay auto-nudge routine (waits 0.7s; cancels if autoplay stopped)
+    private IEnumerator AutoNudgeRoutine()
+    {
+        float timer = 0f;
+        while (timer < 0.7f)
+        {
+            // If player stopped autoplay during this wait, cancel and leave waiting for manual tap
+            if (!isAutoPlaying || currentState != GameState.AwaitingNudge)
+            {
+                autoNudgeCoroutine = null;
+                yield break;
+            }
+            timer += Time.deltaTime;
+            yield return null;
+        }
+
+        autoNudgeCoroutine = null;
+
+        if (isAutoPlaying && currentState == GameState.AwaitingNudge)
+        {
+            if (nudgeController != null && nudgeController.TryGetFirstValidNudge(out int reel, out string direction))
+            {
+                ExecuteNudge(reel, direction);
+            }
+            else
+            {
+                ExecuteNudge(0, "lower");
+            }
+        }
+    }
+
+    // FF: Task 4 - 5-second timeout routine for nudge response
+    private IEnumerator NudgeTimeoutRoutine(float timeoutSeconds)
+    {
+        yield return new WaitForSeconds(timeoutSeconds);
+        HandleNudgeFailure("Nudge failed. Please try again.");
+    }
+
+    // FF: Task 4 - Safety handler for nudge timeout or socket error/disconnect
+    internal void HandleNudgeFailure(string errorMessage)
+    {
+        if (nudgeTimeoutCoroutine != null)
+        {
+            StopCoroutine(nudgeTimeoutCoroutine);
+            nudgeTimeoutCoroutine = null;
+        }
+        if (completeNudgeCoroutine != null)
+        {
+            StopCoroutine(completeNudgeCoroutine);
+            completeNudgeCoroutine = null;
+        }
+        if (autoNudgeCoroutine != null)
+        {
+            StopCoroutine(autoNudgeCoroutine);
+            autoNudgeCoroutine = null;
+        }
+
+        // Reset nudged reel position back to middlePosition if it was offset
+        if (slotView != null && nudgedReelIndex >= 0)
+        {
+            slotView.ResetReelPosition(nudgedReelIndex);
+        }
 
         if (nudgeController != null)
         {
             nudgeController.DisableAllButtons();
         }
 
-        if (slotView != null)
+        if (isAutoPlaying)
         {
-            slotView.AnimateReelNudge(reelIndex, direction);
+            StopAutoPlay();
         }
 
-        if (socketManager != null)
+        currentState = GameState.Idle;
+
+        if (uiManager != null)
         {
-            socketManager.SendNudgeRequest(reelIndex, direction);
+            uiManager.EnableControlsAfterWinAnimation();
+        }
+
+        if (popupManager != null)
+        {
+            popupManager.ShowServerError(errorMessage, false);
         }
     }
 
@@ -695,7 +866,20 @@ public class GameManager : MonoBehaviour
         autoPlayRemainingRounds = 0;
         wasAutoPlayingBeforeFreeSpins = false;
 
+        // FF: Task 3 - Cancel pending auto-nudge timer so it leaves game waiting for manual tap
+        if (autoNudgeCoroutine != null)
+        {
+            StopCoroutine(autoNudgeCoroutine);
+            autoNudgeCoroutine = null;
+        }
+
         uiManager.OnAutoPlayStopped();
+
+        // FF: If stopped while awaiting nudge, ensure manual nudge controls stay active
+        if (currentState == GameState.AwaitingNudge && uiManager != null)
+        {
+            uiManager.DisableControlsForNudge(false);
+        }
     }
 
     internal bool ShouldResumeAutoPlay()
@@ -804,6 +988,34 @@ public class GameManager : MonoBehaviour
         {
             StopCoroutine(spinCoroutine);
             spinCoroutine = null;
+        }
+
+        // FF: Task 4 - Handle disconnect while in AwaitingNudge or pending nudge
+        if (currentState == GameState.AwaitingNudge || nudgeTimeoutCoroutine != null || completeNudgeCoroutine != null)
+        {
+            if (nudgeTimeoutCoroutine != null)
+            {
+                StopCoroutine(nudgeTimeoutCoroutine);
+                nudgeTimeoutCoroutine = null;
+            }
+            if (completeNudgeCoroutine != null)
+            {
+                StopCoroutine(completeNudgeCoroutine);
+                completeNudgeCoroutine = null;
+            }
+            if (autoNudgeCoroutine != null)
+            {
+                StopCoroutine(autoNudgeCoroutine);
+                autoNudgeCoroutine = null;
+            }
+            if (nudgeController != null)
+            {
+                nudgeController.DisableAllButtons();
+            }
+            if (slotView != null && nudgedReelIndex >= 0)
+            {
+                slotView.ResetReelPosition(nudgedReelIndex);
+            }
         }
 
         wasAutoPlayingBeforeFreeSpins = false;

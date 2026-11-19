@@ -191,11 +191,11 @@ public class PopupManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Show error popup for server error
+    /// FF: Task 4 - Show error popup for server error (isCritical = false keeps the game usable upon dismissal)
     /// </summary>
-    internal void ShowServerError(string message = "A server error occurred. Please try again later.")
+    internal void ShowServerError(string message = "A server error occurred. Please try again later.", bool isCritical = false)
     {
-        ShowErrorPopup("Server Error", message, true);
+        ShowErrorPopup("Server Error", message, isCritical);
     }
 
     /// <summary>

@@ -680,9 +680,14 @@ public class SlotView : MonoBehaviour
 
     #region Interactive Nudge
 
+    // FF: Task 2 - Reel nudge slide + small overshoot (~0.25s total)
     internal void AnimateReelNudge(int columnIndex, string direction, System.Action onComplete = null)
     {
-        if (columnIndex < 0 || columnIndex >= reelTransforms.Length) return;
+        if (columnIndex < 0 || columnIndex >= reelTransforms.Length)
+        {
+            onComplete?.Invoke();
+            return;
+        }
 
         Transform slotTransform = reelTransforms[columnIndex];
         float currentY = slotTransform.localPosition.y;
@@ -692,16 +697,46 @@ public class SlotView : MonoBehaviour
         bool isLower = !string.IsNullOrEmpty(direction) && direction.ToLower().Contains("lower");
         float shift = isLower ? -symbolHeight : symbolHeight;
         float targetY = currentY + shift;
-        float overshoot = isLower ? -15f : 15f;
+        float overshoot = isLower ? -12f : 12f;
 
         Sequence nudgeSeq = DOTween.Sequence();
+        // 0.16s slide with slight overshoot + 0.09s settle = 0.25s total
         nudgeSeq.Append(slotTransform.DOLocalMoveY(targetY + overshoot, 0.16f).SetEase(Ease.OutQuad));
-        nudgeSeq.Append(slotTransform.DOLocalMoveY(targetY, 0.10f).SetEase(Ease.InOutSine));
+        nudgeSeq.Append(slotTransform.DOLocalMoveY(targetY, 0.09f).SetEase(Ease.InOutSine));
         nudgeSeq.OnComplete(() =>
         {
             AudioManager.Instance?.PlayReelStop();
             onComplete?.Invoke();
         });
+    }
+
+    // FF: Task 2 - Redraw symbols and snap reel back to middlePosition in the exact same frame (no visible jump)
+    internal void SnapNudgedReel(int columnIndex, List<int> newSymbols)
+    {
+        if (columnIndex < 0 || columnIndex >= reelTransforms.Length) return;
+        if (newSymbols == null) return;
+
+        // Redraw the 3 visible symbols
+        SetReelSymbols(columnIndex, newSymbols, false);
+
+        // Snap reel transform position back to middlePosition (0f) in the same frame
+        if (reelTransforms[columnIndex] != null)
+        {
+            reelTransforms[columnIndex].DOKill();
+            Vector3 pos = reelTransforms[columnIndex].localPosition;
+            reelTransforms[columnIndex].localPosition = new Vector3(pos.x, middlePosition, pos.z);
+        }
+    }
+
+    // FF: Task 4 - Reset reel position to middlePosition on timeout or error
+    internal void ResetReelPosition(int columnIndex)
+    {
+        if (columnIndex >= 0 && columnIndex < reelTransforms.Length && reelTransforms[columnIndex] != null)
+        {
+            reelTransforms[columnIndex].DOKill();
+            Vector3 pos = reelTransforms[columnIndex].localPosition;
+            reelTransforms[columnIndex].localPosition = new Vector3(pos.x, middlePosition, pos.z);
+        }
     }
 
     internal void UpdateMatrixAfterNudge(List<List<int>> newMatrix)
