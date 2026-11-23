@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using DG.Tweening;
+using Spine.Unity;
 
 public class SlotView : MonoBehaviour
 {
@@ -84,6 +85,35 @@ public class SlotView : MonoBehaviour
     [Header("Symbol Info Card")]
     [SerializeField] private SymbolInfoCard symbolInfoCard;
 
+    // FF: Task 6 - Grid layout switch cover image
+    [Header("FF: Grid Layout Switch")]
+    [SerializeField] private GameObject last2SlotCoverImage;
+
+    // FF: Task 10 - Spine win animations
+    // Folder -> ID mapping:
+    // 0: D_S_Character
+    // 1: D_Character
+    // 2: Pilot = Girl_Character or Gun_Character (blonde)
+    // 3: 777
+    // 4: B_Robot
+    // 5: 77
+    // 6: 7
+    // 7: Scout = the other character (green hair)
+    // 8: Bar_5
+    // 9: Bar_3
+    // 10: Bar
+    [Header("FF: Spine Win Animations")]
+    [SerializeField] private SkeletonDataAsset[] symbolSkeletons = new SkeletonDataAsset[11];
+    [System.Obsolete("FF: WinBox W_Frame child handles win frame presentation now.")]
+    [SerializeField] private SkeletonDataAsset winFrameSkeleton;
+    [SerializeField] private SpineAnimController[] cellSpines = new SpineAnimController[15]; // col * 3 + row
+    [System.Obsolete("FF: WinBox W_Frame child handles win frame presentation now.")]
+    [SerializeField] private SpineAnimController[] cellFrameSpines = new SpineAnimController[15]; // col * 3 + row
+
+    // FF: Task 1 - Cached W_Frame SpineAnimControllers inside WinBox prefabs (5 cols x 3 rows)
+    private SpineAnimController[,] winBoxFrameSpines = new SpineAnimController[5, 3];
+    private bool winBoxFrameSpinesCached = false;
+
 
     private float middlePosition = 0f;
     private float cycleDistance;
@@ -107,6 +137,7 @@ public class SlotView : MonoBehaviour
     {
         BuildSymbolSpriteArray();
         InitializeReels();
+        CacheWinBoxFrameSpines(); // FF: Task 1 - Cache win box W_Frame SpineAnimControllers
     }
 
     private void Start()
@@ -117,11 +148,13 @@ public class SlotView : MonoBehaviour
         }
         DisableAllOverlays();
         SetupSymbolButtons();
+        // FF: Task 1 - Initially hide top/bottom cells of reels 3-4 in base game
+        SetAllSideCellsVisible(false);
     }
 
     private void DisableAllOverlays()
     {
-        DisableColumns(winBoxColumns);
+        DisableWinBoxColumns();
         DisableColumns(winAnimationColumns);
         HidePhase1TotalWinText();
         if (symbolInfoCard) symbolInfoCard.HideCard();
@@ -199,6 +232,50 @@ public class SlotView : MonoBehaviour
         => (col >= 0 && col < cols?.Length && cols[col]?.rows != null && row >= 0 && row < cols[col].rows.Length)
             ? cols[col].rows[row] : null;
 
+    // FF: Task 1 - Caches SpineAnimController on child W_Frame of each WinBox (col 0..4, row 0..2)
+    private void CacheWinBoxFrameSpines()
+    {
+        if (winBoxFrameSpinesCached) return;
+        winBoxFrameSpinesCached = true;
+
+        if (winBoxColumns == null) return;
+        for (int col = 0; col < winBoxColumns.Length && col < 5; col++)
+        {
+            if (winBoxColumns[col]?.rows == null) continue;
+            for (int row = 0; row < winBoxColumns[col].rows.Length && row < 3; row++)
+            {
+                var go = winBoxColumns[col].rows[row];
+                if (go != null)
+                {
+                    winBoxFrameSpines[col, row] = go.GetComponentInChildren<SpineAnimController>(true);
+                }
+            }
+        }
+    }
+
+    private SpineAnimController GetWinBoxFrameSpine(int col, int row)
+    {
+        if (col < 0 || col >= 5 || row < 0 || row >= 3) return null;
+        if (!winBoxFrameSpinesCached) CacheWinBoxFrameSpines();
+        return winBoxFrameSpines[col, row];
+    }
+
+    private void StopAllWinBoxFrameSpines()
+    {
+        if (!winBoxFrameSpinesCached) CacheWinBoxFrameSpines();
+        for (int col = 0; col < 5; col++)
+        {
+            for (int row = 0; row < 3; row++)
+            {
+                var fs = winBoxFrameSpines[col, row];
+                if (fs != null)
+                {
+                    fs.Stop();
+                }
+            }
+        }
+    }
+
     private void BuildSymbolSpriteArray()
     {
         symbolSprites = new Sprite[SymbolCount];
@@ -264,6 +341,34 @@ public class SlotView : MonoBehaviour
         {
             SetReelSymbols(col, matrix[col], true);
         }
+
+        // FF: Task 1 - Hide top/bottom cells of reels 3-4 in base game
+        SetAllSideCellsVisible(false);
+    }
+
+    #endregion
+
+    #region FF: Task 1 - Side Cells Visibility
+
+    // FF: Task 1 - Control visibility of top/bottom cells for reels 3 and 4
+    private void SetSideCellsVisible(int col, bool visible)
+    {
+        if (col != 3 && col != 4) return;
+        if (reelImagesList == null || col >= reelImagesList.Count) return;
+        var reel = reelImagesList[col];
+        if (reel == null || reel.images == null || reel.images.Count < 5) return;
+
+        bool isInFreeSpins = gameManager != null && gameManager.isInFreeSpins;
+        bool show = visible || isInFreeSpins;
+
+        if (reel.images[2] != null) reel.images[2].enabled = show;
+        if (reel.images[4] != null) reel.images[4].enabled = show;
+    }
+
+    internal void SetAllSideCellsVisible(bool visible)
+    {
+        SetSideCellsVisible(3, visible);
+        SetSideCellsVisible(4, visible);
     }
 
     #endregion
@@ -288,9 +393,10 @@ public class SlotView : MonoBehaviour
 
         var reel = reelImagesList[columnIndex];
 
-        if (reel.images == null || reel.images.Count != 7)
+        // FF: Relax check from strict != 7 to >= 5 (visibleStartIndex 2 + 3 rows) to support custom/expanded capacity (e.g. 14 images)
+        if (reel.images == null || reel.images.Count < 5)
         {
-            Debug.LogError($"SetReelSymbols: Reel {columnIndex} has invalid image count {reel.images?.Count}, expected 7");
+            Debug.LogError($"SetReelSymbols: Reel {columnIndex} has invalid image count {reel.images?.Count}, expected at least 5");
             return;
         }
 
@@ -384,10 +490,15 @@ public class SlotView : MonoBehaviour
     {
         if (isSpinning) return;
 
+        // FF: Task 1 - Make all cells visible while spinning
+        SetAllSideCellsVisible(true);
+
         if (symbolInfoCard != null) symbolInfoCard.HideCard();
 
         isSpinning = true;
         KillAllTweens();
+        // FF: Task 10 - Stop all Spine animations on StartSpin
+        StopAllCellSpines();
 
         DisableAllOverlays();
 
@@ -485,14 +596,17 @@ public class SlotView : MonoBehaviour
     private void CycleReelSymbols(int columnIndex)
     {
         var reel = reelImagesList[columnIndex];
-        if (reel.images == null || reel.images.Count != 7) return;
+        // FF: Dynamic cycle loop supporting any image count >= 5
+        if (reel.images == null || reel.images.Count < 5) return;
 
-        for (int i = 6; i > 0; i--)
+        for (int i = reel.images.Count - 1; i > 0; i--)
         {
-            reel.images[i].sprite = reel.images[i - 1].sprite;
+            if (reel.images[i] != null && reel.images[i - 1] != null)
+                reel.images[i].sprite = reel.images[i - 1].sprite;
         }
 
-        reel.images[0].sprite = GetSymbolSprite(RandomFillerSymbolId());
+        if (reel.images.Count > 0 && reel.images[0] != null)
+            reel.images[0].sprite = GetSymbolSprite(RandomFillerSymbolId());
     }
 
     #endregion
@@ -561,6 +675,9 @@ public class SlotView : MonoBehaviour
         yield return new WaitForSeconds(longestStopTime);
 
         isSpinning = false;
+
+        // FF: Task 1 - Ensure reels 3-4 top/bottom hidden when finished stopping in base game
+        SetAllSideCellsVisible(false);
 
         onComplete?.Invoke();
     }
@@ -670,6 +787,9 @@ public class SlotView : MonoBehaviour
                     PlayStopAnimationsForColumn(col);
                 }
             }
+
+            // FF: Task 1 - Ensure reels 3-4 top/bottom hidden when finished quick stop in base game
+            SetAllSideCellsVisible(false);
             
             onComplete?.Invoke();
             return;
@@ -755,6 +875,9 @@ public class SlotView : MonoBehaviour
 
     private void PlayStopAnimationsForColumn(int col)
     {
+        // FF: Task 1 - Hide top/bottom cells of reels 3-4 when reel stops in base game
+        SetSideCellsVisible(col, false);
+
         if (currentDisplayMatrix == null || col >= currentDisplayMatrix.Count) return;
         
         for (int row = 0; row < currentDisplayMatrix[col].Count; row++)
@@ -907,7 +1030,7 @@ public class SlotView : MonoBehaviour
         if (column >= reelImagesList.Count) return;
 
         var reel = reelImagesList[column];
-        if (reel.images == null || reel.images.Count != 7) return;
+        if (reel.images == null || reel.images.Count < 5) return; // FF: relaxed from != 7
 
         int imageIndex = 2 + row;
         if (imageIndex >= reel.images.Count) return;
@@ -1024,6 +1147,18 @@ public class SlotView : MonoBehaviour
         // Show Phase 1 Total Win Text with final win value
         ShowPhase1TotalWin(totalWinAmount);
 
+        // FF: Task 2A - Show win amount text on the last winning cell of each winning line in Phase 1
+        foreach (var winLine in winLines)
+        {
+            if (winLine.positions != null && winLine.positions.Count > 0)
+            {
+                int lastFlatIndex = winLine.positions[winLine.positions.Count - 1];
+                int lastRow = lastFlatIndex / 5;
+                int lastCol = lastFlatIndex % 5;
+                ShowWinLineTextOnIcon(lastCol, lastRow, winLine.winAmount);
+            }
+        }
+
         AudioManager.Instance?.PlayWinLinePhase1Start();
 
         // Animate all winning symbols and wait for their ImageAnimation loops to complete
@@ -1061,14 +1196,11 @@ public class SlotView : MonoBehaviour
                 KillWinTweens(false);
                 HideAllWinLineTexts();
 
-                // Show WinLineText on 1st icon of the active win line only if there are multiple win lines
-                if (winLines.Count > 1)
-                {
-                    int firstFlatIndex = winLine.positions[0];
-                    int firstRow = firstFlatIndex / 5;
-                    int firstCol = firstFlatIndex % 5;
-                    ShowWinLineTextOnIcon(firstCol, firstRow, winLine.winAmount);
-                }
+                // FF: Task 2A - Show WinLineText on the last icon of the active win line (single or multiple lines)
+                int lastFlatIndex = winLine.positions[winLine.positions.Count - 1];
+                int lastRow = lastFlatIndex / 5;
+                int lastCol = lastFlatIndex % 5;
+                ShowWinLineTextOnIcon(lastCol, lastRow, winLine.winAmount);
 
                 // Animate win line symbols and wait for their ImageAnimation loops to complete
                 yield return StartCoroutine(AnimateWinPositions(winLine.positions));
@@ -1076,6 +1208,7 @@ public class SlotView : MonoBehaviour
         }
     }
 
+    // FF: Task 10 - Spine win animations with fallback
     private IEnumerator AnimateWinPositions(IEnumerable<int> flatPositions)
     {
         if (flatPositions == null) yield break;
@@ -1083,10 +1216,16 @@ public class SlotView : MonoBehaviour
         int rowLimit = (gameManager != null && gameManager.gameConfig != null) ? gameManager.gameConfig.rowCount : 3;
         int loopCountTarget = (gameManager != null && (gameManager.isInFreeSpins || gameManager.isAutoPlaying)) ? 1 : winSymbolLoopCount;
 
-        List<ImageAnimation> activeAnims = new List<ImageAnimation>();
+        int totalActiveAnims = 0;
         int completedCount = 0;
         bool isCompleted = false;
 
+        // FF: Task 4 - Track Spine animation durations for safety timeout
+        float maxSpineDuration = 0f;
+        bool anySpineActive = false;
+
+        // Filter valid cells to animate
+        List<int> validPositions = new List<int>();
         foreach (int flatIndex in flatPositions)
         {
             int row = flatIndex / 5;
@@ -1094,11 +1233,24 @@ public class SlotView : MonoBehaviour
 
             if (col < 0 || col >= 5 || row < 0 || row >= rowLimit) continue;
 
-            EnableWinBox(col, row);
+            // FF: Task 2c - In base game reels 3-4 show only center cell (row 1); skip hidden top/bottom cells
+            bool isBaseGame = gameManager == null || !gameManager.isInFreeSpins;
+            if (isBaseGame && col >= 3 && row != 1) continue;
+
+            validPositions.Add(flatIndex);
+        }
+
+        if (validPositions.Count == 0) yield break;
+
+        foreach (int flatIndex in validPositions)
+        {
+            int row = flatIndex / 5;
+            int col = flatIndex % 5;
+            int cellIndex = col * 3 + row;
 
             if (col >= reelImagesList.Count) continue;
             var reel = reelImagesList[col];
-            if (reel.images == null || reel.images.Count != 7) continue;
+            if (reel.images == null || reel.images.Count < 5) continue; // FF: relaxed from != 7
 
             int imageIndex = 2 + row;
             if (imageIndex >= reel.images.Count) continue;
@@ -1106,43 +1258,39 @@ public class SlotView : MonoBehaviour
             Image symbolImage = reel.images[imageIndex];
             if (symbolImage == null) continue;
 
-            var animGO = WinBox(winAnimationColumns, col, row);
-            if (animGO == null) continue;
-
-            ImageAnimation imageAnim = animGO.GetComponent<ImageAnimation>();
-            if (imageAnim == null) continue;
-
             if (col >= currentDisplayMatrix.Count || row >= currentDisplayMatrix[col].Count) continue;
             int symbolId = currentDisplayMatrix[col][row];
-            if (symbolId < 0 || symbolId >= animationSpriteArrays.Length) continue;
 
-            List<Sprite> animSprites = animationSpriteArrays[symbolId];
-            if (animSprites == null || animSprites.Count == 0) continue;
+            bool hasSpine = symbolSkeletons != null
+                && symbolId >= 0 && symbolId < symbolSkeletons.Length
+                && symbolSkeletons[symbolId] != null
+                && cellSpines != null
+                && cellIndex >= 0 && cellIndex < cellSpines.Length
+                && cellSpines[cellIndex] != null;
 
-            imageAnim.textureArray = animSprites;
-            imageAnim.doLoopAnimation = true;
+            totalActiveAnims++;
 
-            animGO.SetActive(true);
-            Image animRenderer = imageAnim.rendererDelegate != null ? imageAnim.rendererDelegate : animGO.GetComponent<Image>();
-            if (animRenderer != null)
+            // FF: Task 2 - Enable WinBox (with W_Frame) for every winning cell in BOTH paths
+            EnableWinBox(col, row);
+
+            if (hasSpine)
             {
-                animRenderer.DOKill();
-                Color c = animRenderer.color;
-                animRenderer.color = new Color(c.r, c.g, c.b, 1f);
-            }
+                anySpineActive = true;
+                var spineCtrl = cellSpines[cellIndex];
+                spineCtrl.SetSkeletonData(symbolSkeletons[symbolId]);
 
-            symbolImage.DOKill();
-            symbolImage.DOFade(0f, 0.2f);
+                // FF: Task 4 - Record longest Spine duration among active cells
+                float spineDur = spineCtrl.GetAnimationDuration();
+                if (spineDur > maxSpineDuration) maxSpineDuration = spineDur;
 
-            activeAnims.Add(imageAnim);
+                spineCtrl.gameObject.SetActive(true);
 
-            imageAnim.onLoopComplete = (currentLoop) =>
-            {
-                if (currentLoop >= loopCountTarget)
+                symbolImage.DOKill();
+                symbolImage.DOFade(0f, 0.2f);
+
+                spineCtrl.Play(loopCountTarget, () =>
                 {
-                    imageAnim.onLoopComplete = null;
-                    imageAnim.StopAnimation();
-                    if (animGO != null) animGO.SetActive(false);
+                    if (spineCtrl != null) spineCtrl.Stop();
 
                     if (symbolImage != null)
                     {
@@ -1151,27 +1299,99 @@ public class SlotView : MonoBehaviour
                     }
 
                     completedCount++;
-                    if (completedCount >= activeAnims.Count)
+                    if (completedCount >= totalActiveAnims)
                     {
                         isCompleted = true;
                     }
+                });
+            }
+            else
+            {
+                // FF: Fallback: symbol pulse 1.15x + short alpha flash (WinBox already enabled above)
+                symbolImage.DOKill();
+                symbolImage.transform.localScale = Vector3.one;
+
+                Sequence seq = DOTween.Sequence();
+                // Symbol pulse 1.15x
+                seq.Append(symbolImage.transform.DOScale(1.15f, 0.25f).SetEase(Ease.OutQuad));
+                seq.Append(symbolImage.transform.DOScale(1.0f, 0.25f).SetEase(Ease.InQuad));
+
+                // Short alpha flash
+                Sequence flashSeq = DOTween.Sequence();
+                flashSeq.Append(symbolImage.DOFade(0.4f, 0.12f).SetEase(Ease.OutQuad));
+                flashSeq.Append(symbolImage.DOFade(1.0f, 0.12f).SetEase(Ease.InQuad));
+                seq.Join(flashSeq);
+
+                seq.SetLoops(loopCountTarget);
+                seq.OnComplete(() =>
+                {
+                    if (symbolImage != null)
+                    {
+                        symbolImage.transform.localScale = Vector3.one;
+                        Color c = symbolImage.color;
+                        symbolImage.color = new Color(c.r, c.g, c.b, 1f);
+                    }
+                    completedCount++;
+                    if (completedCount >= totalActiveAnims)
+                    {
+                        isCompleted = true;
+                    }
+                });
+                winTweens.Add(seq);
+            }
+        }
+
+        if (totalActiveAnims > 0)
+        {
+            // FF: Task 2 & Task 4 - Win animation safety timeout calculation
+            // W_Frame loops continuously, so the wait depends on symbol Spines or fallback pulse.
+            float maxWait;
+            if (anySpineActive && maxSpineDuration > 0f)
+            {
+                maxWait = (maxSpineDuration * loopCountTarget) + 1.0f;
+            }
+            else
+            {
+                maxWait = (0.5f * loopCountTarget) + 1.0f;
+            }
+            if (maxWait < 1.5f) maxWait = 1.5f;
+
+            float timer = 0f;
+            while (!isCompleted && timer < maxWait)
+            {
+                timer += Time.deltaTime;
+                yield return null;
+            }
+
+            if (!isCompleted)
+            {
+                Debug.LogWarning($"[FF] Win animation timeout after {timer:F2}s (maxWait: {maxWait:F2}s) - forcing completion");
+                StopAllCellSpines();
+
+                // Restore every symbol image alpha to 1 and scale to 1
+                if (reelImagesList != null)
+                {
+                    foreach (var reel in reelImagesList)
+                    {
+                        if (reel?.images != null)
+                        {
+                            foreach (var img in reel.images)
+                            {
+                                if (img != null)
+                                {
+                                    img.DOKill();
+                                    img.transform.localScale = Vector3.one;
+                                    Color c = img.color;
+                                    img.color = new Color(c.r, c.g, c.b, 1f);
+                                }
+                            }
+                        }
+                    }
                 }
-            };
-        }
 
-        if (winLineBoxToAnimationDelay > 0)
-        {
-            yield return new WaitForSeconds(winLineBoxToAnimationDelay);
-        }
-
-        foreach (var imageAnim in activeAnims)
-        {
-            imageAnim.StartAnimation();
-        }
-
-        if (activeAnims.Count > 0)
-        {
-            yield return new WaitUntil(() => isCompleted);
+                // Respect Task 1: after restoring images, base-game reels 3-4 top/bottom must stay hidden
+                SetAllSideCellsVisible(false);
+            }
         }
         else
         {
@@ -1196,7 +1416,8 @@ public class SlotView : MonoBehaviour
             var tmpText = textTransform.GetComponent<TMPro.TMP_Text>();
             if (tmpText != null)
             {
-                tmpText.text = winAmount.ToString("0.###");
+                // FF: Format as 0.00
+                tmpText.text = winAmount.ToString("0.00");
             }
             AnimateTextScaleAppear(textTransform);
         }
@@ -1262,7 +1483,24 @@ public class SlotView : MonoBehaviour
         var go = WinBox(winBoxColumns, col, row);
         if (go)
         {
+            // FF: Task 2A - Ensure parent column and grandparent WinBoxOverlay are active
+            if (go.transform.parent != null)
+            {
+                if (go.transform.parent.parent != null)
+                {
+                    go.transform.parent.parent.gameObject.SetActive(true);
+                }
+                go.transform.parent.gameObject.SetActive(true);
+            }
             go.SetActive(true);
+
+            // FF: Task 1 - Activate W_Frame child and Play(true) (loop) from the start every time
+            var frameSpine = GetWinBoxFrameSpine(col, row);
+            if (frameSpine != null)
+            {
+                frameSpine.gameObject.SetActive(true);
+                frameSpine.Play(true);
+            }
         }
         else
         {
@@ -1272,8 +1510,30 @@ public class SlotView : MonoBehaviour
 
     private void DisableWinBox(int col, int row)
     {
+        // FF: Task 1 - Stop() W_Frame spine before hiding the box so next win starts from frame 0
+        var frameSpine = GetWinBoxFrameSpine(col, row);
+        if (frameSpine != null)
+        {
+            frameSpine.Stop();
+        }
+
         var go = WinBox(winBoxColumns, col, row);
         if (go) go.SetActive(false);
+    }
+
+    // FF: Task 2A & Task 1 - Stop all 15 W_Frame spines, disable all win box columns, and hide grandparent WinBoxOverlay
+    private void DisableWinBoxColumns()
+    {
+        StopAllWinBoxFrameSpines();
+        DisableColumns(winBoxColumns);
+        if (winBoxColumns != null && winBoxColumns.Length > 0 && winBoxColumns[0]?.rows != null && winBoxColumns[0].rows.Length > 0)
+        {
+            var firstBox = winBoxColumns[0].rows[0];
+            if (firstBox != null && firstBox.transform.parent != null && firstBox.transform.parent.parent != null)
+            {
+                firstBox.transform.parent.parent.gameObject.SetActive(false);
+            }
+        }
     }
 
     private void ResetSymbolScale(int col, int row)
@@ -1317,9 +1577,9 @@ public class SlotView : MonoBehaviour
         }
 
         var reel = reelImagesList[column];
-        if (reel.images == null || reel.images.Count != 7)
+        if (reel.images == null || reel.images.Count < 5) // FF: relaxed from != 7
         {
-            Debug.LogError($"[AnimateWinSymbol] Reel {column} has invalid images list");
+            Debug.LogError($"[AnimateWinSymbol] Reel {column} has invalid images list (expected at least 5, got {reel.images?.Count})");
             return;
         }
 
@@ -1434,8 +1694,34 @@ public class SlotView : MonoBehaviour
         winTweens.Add(seq);
     }
 
+    // FF: Task 2e - Stop all win animations, tweens, and hide win boxes
+    internal void StopAllWinAnimations()
+    {
+        KillWinTweens(true);
+    }
+
+    // FF: Task 10 & Task 1 - Stop and clear all cell spine animations and win box frame spines
+    private void StopAllCellSpines()
+    {
+        if (cellSpines != null)
+        {
+            for (int i = 0; i < cellSpines.Length; i++)
+            {
+                if (cellSpines[i] != null)
+                {
+                    cellSpines[i].Stop();
+                }
+            }
+        }
+
+        StopAllWinBoxFrameSpines();
+    }
+
     private void KillWinTweens(bool stopCoroutine = true)
     {
+        // FF: Task 10 - Stop all Spine animations on win tweens kill
+        StopAllCellSpines();
+
         foreach (var tween in winTweens)
         {
             tween?.Kill();
@@ -1481,7 +1767,7 @@ public class SlotView : MonoBehaviour
             }
         }
 
-        DisableColumns(winBoxColumns);
+        DisableWinBoxColumns();
         HideAllWinLineTexts();
         HidePhase1TotalWinText();
 
@@ -1501,6 +1787,12 @@ public class SlotView : MonoBehaviour
                     }
                 }
             }
+        }
+
+        // FF: Task 1 - Ensure reels 3-4 top/bottom stay hidden in base game after win animations cleanup
+        if (!isSpinning)
+        {
+            SetAllSideCellsVisible(false);
         }
     }
 
@@ -1529,6 +1821,46 @@ public class SlotView : MonoBehaviour
 
         KillWinTweens();
     }
+
+    #region FF: Grid Layout Switch
+
+    // FF: Task 6 - Grid layout switch
+    internal void SetFreeGameLayout(bool full)
+    {
+        if (last2SlotCoverImage == null) return;
+
+        // full == true: Free Games (5x3 fully open, hide cover image)
+        // full == false: Base Game (reels 3-4 top/bottom covered, show cover image)
+        bool showCover = !full;
+
+        CanvasGroup cg = last2SlotCoverImage.GetComponent<CanvasGroup>();
+        if (cg != null)
+        {
+            if (showCover)
+            {
+                last2SlotCoverImage.SetActive(true);
+                cg.DOKill();
+                cg.DOFade(1f, 0.3f);
+            }
+            else
+            {
+                cg.DOKill();
+                cg.DOFade(0f, 0.3f).OnComplete(() =>
+                {
+                    if (last2SlotCoverImage != null)
+                    {
+                        last2SlotCoverImage.SetActive(false);
+                    }
+                });
+            }
+        }
+        else
+        {
+            last2SlotCoverImage.SetActive(showCover);
+        }
+    }
+
+    #endregion
 
     #region Cleanup
 

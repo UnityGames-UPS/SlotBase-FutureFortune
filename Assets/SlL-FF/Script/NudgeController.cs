@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using DG.Tweening;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -25,6 +26,10 @@ public class NudgeController : MonoBehaviour
 
     [Tooltip("Target reel index for each Lower button (Default: 0, 1, 2)")]
     [SerializeField] private int[] lowerReelIndices = new int[] { 0, 1, 2 };
+
+    [Header("Valid Move Pulse")]
+    [SerializeField] private float pulseScale = 1.5f;
+    [SerializeField] private float pulseHalfDuration = 0.3f; // 1 -> 1.5 in 0.3 s, back in 0.3 s
 
     [Header("Optional UI Elements")]
     [Tooltip("Parent GameObject or container for the nudge controls to show/hide during nudge phase")]
@@ -67,7 +72,27 @@ public class NudgeController : MonoBehaviour
 
         SetupButtons();
         DisableAllButtons();
+
+#if UNITY_EDITOR
+        RunSelfTest();
+#endif
     }
+
+    private void OnDisable()
+    {
+        // FF: Kill any active tweens to avoid DOTween warnings on disable
+        KillAllTweensAndResetScale();
+    }
+
+    private void OnDestroy()
+    {
+        // FF: Kill any active tweens on destroy
+        KillAllTweensAndResetScale();
+    }
+
+    // FF: Helper for button-to-reel index mapping
+    private int GetReelIndex(int[] indices, int buttonIndex) =>
+        (indices != null && buttonIndex < indices.Length) ? indices[buttonIndex] : buttonIndex;
 
     private void SetupButtons()
     {
@@ -76,9 +101,7 @@ public class NudgeController : MonoBehaviour
             for (int i = 0; i < raiseButtons.Length; i++)
             {
                 int btnIndex = i;
-                int reelIndex = (raiseReelIndices != null && btnIndex < raiseReelIndices.Length)
-                    ? raiseReelIndices[btnIndex]
-                    : btnIndex;
+                int reelIndex = GetReelIndex(raiseReelIndices, btnIndex);
 
                 if (raiseButtons[btnIndex] != null)
                 {
@@ -92,9 +115,7 @@ public class NudgeController : MonoBehaviour
             for (int i = 0; i < lowerButtons.Length; i++)
             {
                 int btnIndex = i;
-                int reelIndex = (lowerReelIndices != null && btnIndex < lowerReelIndices.Length)
-                    ? lowerReelIndices[btnIndex]
-                    : btnIndex;
+                int reelIndex = GetReelIndex(lowerReelIndices, btnIndex);
 
                 if (lowerButtons[btnIndex] != null)
                 {
@@ -105,18 +126,52 @@ public class NudgeController : MonoBehaviour
     }
 
     /// <summary>
-    /// FF: Task 1 - Called when spin stops with awaitingNudge == true.
-    /// Evaluates which nudge moves result in a 3+ identical center-line win from reel 0.
-    /// Only enables valid buttons, disables/hides invalid ones.
-    /// Fallback: if no valid move found, logs warning and enables all 6.
+    /// FF: Called when spin stops with awaitingNudge == true.
+    /// ALL 6 buttons are visible and interactable.
+    /// Valid move(s) receive a looping pulse animation (1 -> pulseScale -> 1).
+    /// Fallback: if no valid move found, logs warning and leaves all 6 visible without pulse.
     /// </summary>
-    public void EnableNudgeMode(List<int> above = null, List<int> below = null)
+    public void EnableNudgeMode(List<int> above = null, List<int> below = null, List<ServerNudgeOption> nudgeOptions = null)
     {
         validNudges.Clear();
 
         if (nudgeContainer != null)
         {
             nudgeContainer.SetActive(true);
+        }
+
+        bool[] raiseValid = new bool[3];
+        bool[] lowerValid = new bool[3];
+
+        // FF: If server provided explicit nudgeOptions, use them directly
+        if (nudgeOptions != null && nudgeOptions.Count > 0)
+        {
+            foreach (var opt in nudgeOptions)
+            {
+                if (opt == null) continue;
+                validNudges.Add(new ValidNudge(opt.reel, opt.direction));
+
+                for (int i = 0; i < 3; i++)
+                {
+                    int rRaise = GetReelIndex(raiseReelIndices, i);
+                    int rLower = GetReelIndex(lowerReelIndices, i);
+
+                    if (rRaise == opt.reel && string.Equals(opt.direction, "raise", StringComparison.OrdinalIgnoreCase))
+                    {
+                        raiseValid[i] = true;
+                    }
+                    if (rLower == opt.reel && string.Equals(opt.direction, "lower", StringComparison.OrdinalIgnoreCase))
+                    {
+                        lowerValid[i] = true;
+                    }
+                }
+            }
+
+            if (validNudges.Count > 0)
+            {
+                ApplyButtonStates(raiseValid, lowerValid);
+                return;
+            }
         }
 
         if (slotView == null)
@@ -129,79 +184,95 @@ public class NudgeController : MonoBehaviour
 
         List<List<int>> currentMatrix = slotView != null ? slotView.GetCurrentDisplayMatrix() : null;
 
-        // FF: Fallback check if matrix or above/below are missing
-        if (currentMatrix == null || currentMatrix.Count < 3 || above == null || below == null)
+        // FF: Fallback check if matrix is missing - show all 6, none pulsing
+        if (currentMatrix == null || currentMatrix.Count < 3)
         {
-            Debug.LogWarning("[NudgeController] FF: Matrix or above/below data unavailable; enabling all 6 buttons as fallback.");
-            EnableAllButtons();
+            Debug.LogWarning("[NudgeController] FF: Matrix unavailable; enabling all 6 buttons as fallback.");
+            ApplyButtonStates(raiseValid, lowerValid);
             return;
         }
 
-        // FF: Build current center row (row 1 on 5 reels)
-        int[] currentCenter = new int[5];
-        for (int c = 0; c < 5; c++)
+        // FF: Physical movement:
+        // lower on reel r -> reel moves DOWN -> visible TOP symbol (matrix[r][0]) goes to center (row 1)
+        // raise on reel r -> reel moves UP   -> visible BOTTOM symbol (matrix[r][2]) goes to center (row 1)
+        List<ValidNudge> evaluated = EvaluateValidMovesForMatrix(currentMatrix);
+        foreach (var vn in evaluated)
         {
-            if (c < currentMatrix.Count && currentMatrix[c] != null && currentMatrix[c].Count > 1)
+            validNudges.Add(vn);
+            for (int i = 0; i < 3; i++)
             {
-                currentCenter[c] = currentMatrix[c][1];
-            }
-            else
-            {
-                currentCenter[c] = -1;
-            }
-        }
+                int rRaise = GetReelIndex(raiseReelIndices, i);
+                int rLower = GetReelIndex(lowerReelIndices, i);
 
-        bool[] raiseValid = new bool[3];
-        bool[] lowerValid = new bool[3];
-
-        // FF: Evaluate reels 0..2 for Raise and Lower moves
-        for (int i = 0; i < 3; i++)
-        {
-            int rRaise = (raiseReelIndices != null && i < raiseReelIndices.Length) ? raiseReelIndices[i] : i;
-            int rLower = (lowerReelIndices != null && i < lowerReelIndices.Length) ? lowerReelIndices[i] : i;
-
-            // Check "raise" for reel rRaise: reel moves UP -> symbol from below[rRaise] enters center
-            if (rRaise >= 0 && rRaise < 5 && rRaise < below.Count)
-            {
-                int[] testRaise = (int[])currentCenter.Clone();
-                testRaise[rRaise] = below[rRaise];
-                if (IsCenterRowWinning(testRaise))
-                {
+                if (rRaise == vn.reel && vn.direction == "raise")
                     raiseValid[i] = true;
-                    validNudges.Add(new ValidNudge(rRaise, "raise"));
-                }
-            }
-
-            // Check "lower" for reel rLower: reel moves DOWN -> symbol from above[rLower] enters center
-            if (rLower >= 0 && rLower < 5 && rLower < above.Count)
-            {
-                int[] testLower = (int[])currentCenter.Clone();
-                testLower[rLower] = above[rLower];
-                if (IsCenterRowWinning(testLower))
-                {
+                if (rLower == vn.reel && vn.direction == "lower")
                     lowerValid[i] = true;
-                    validNudges.Add(new ValidNudge(rLower, "lower"));
-                }
             }
         }
 
-        // FF: Task 1 Fallback - If no move is valid, log warning and enable all 6
+        // FF: Fallback - If no move is valid, log warning and show all 6 without pulse
         if (validNudges.Count == 0)
         {
             Debug.LogWarning("[NudgeController] FF: No valid nudge move found; falling back to enabling all 6.");
-            EnableAllButtons();
+            ApplyButtonStates(raiseValid, lowerValid);
             return;
         }
 
-        // FF: Enable only valid buttons; hide/disable the rest
-        ApplyButtonVisibility(raiseValid, lowerValid);
+        // FF: All 6 visible & interactable; valid buttons pulse
+        ApplyButtonStates(raiseValid, lowerValid);
     }
 
     /// <summary>
-    /// FF: Task 1 - A move is valid if the center row has 3+ identical symbols starting from reel 0
+    /// FF: Evaluates valid moves for a client matrix[col][row] (reels 0..4, rows 0..2).
+    /// lower on reel r -> testCenter[r] = matrix[r][0] (top visible)
+    /// raise on reel r -> testCenter[r] = matrix[r][2] (bottom visible)
+    /// Valid = 3+ identical on center row from reel 0 (reels 3-4 count toward 4/5).
+    /// </summary>
+    public static List<ValidNudge> EvaluateValidMovesForMatrix(List<List<int>> matrix)
+    {
+        var result = new List<ValidNudge>();
+        if (matrix == null || matrix.Count < 3) return result;
+
+        int[] currentCenter = new int[5];
+        for (int c = 0; c < 5; c++)
+        {
+            currentCenter[c] = (c < matrix.Count && matrix[c] != null && matrix[c].Count > 1) ? matrix[c][1] : -1;
+        }
+
+        for (int r = 0; r < 3; r++)
+        {
+            // Raise on reel r: reel moves UP -> visible bottom symbol (matrix[r][2]) goes to center
+            if (r < matrix.Count && matrix[r] != null && matrix[r].Count > 2)
+            {
+                int[] testRaise = (int[])currentCenter.Clone();
+                testRaise[r] = matrix[r][2];
+                if (CheckCenterRowWin(testRaise))
+                {
+                    result.Add(new ValidNudge(r, "raise"));
+                }
+            }
+
+            // Lower on reel r: reel moves DOWN -> visible top symbol (matrix[r][0]) goes to center
+            if (r < matrix.Count && matrix[r] != null && matrix[r].Count > 0)
+            {
+                int[] testLower = (int[])currentCenter.Clone();
+                testLower[r] = matrix[r][0];
+                if (CheckCenterRowWin(testLower))
+                {
+                    result.Add(new ValidNudge(r, "lower"));
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// FF: A move is valid if the center row has 3+ identical symbols starting from reel 0
     /// (left to right, center row only, reels 3-4 included for 4/5 of a kind).
     /// </summary>
-    private bool IsCenterRowWinning(int[] center)
+    private static bool CheckCenterRowWin(int[] center)
     {
         if (center == null || center.Length < 3) return false;
         int firstSym = center[0];
@@ -211,8 +282,47 @@ public class NudgeController : MonoBehaviour
         return (center[1] == firstSym && center[2] == firstSym);
     }
 
+#if UNITY_EDITOR
+    [ContextMenu("FF: Run Nudge Self-Test")]
+    public void RunSelfTest()
+    {
+        // Test 1: center [5,0,5,8,10] with matrix[1][2]==5 -> only raise reel 1
+        var m1 = new List<List<int>>
+        {
+            new List<int> { 1, 5, 2 },   // reel 0: top 1, center 5, bot 2
+            new List<int> { 8, 0, 5 },   // reel 1: top 8, center 0, bot 5 (raise brings 5 to center)
+            new List<int> { 9, 5, 10 },  // reel 2: top 9, center 5, bot 10
+            new List<int> { 0, 8, 0 },   // reel 3: center 8
+            new List<int> { 0, 10, 0 }   // reel 4: center 10
+        };
+        var valid1 = EvaluateValidMovesForMatrix(m1);
+        bool t1Passed = valid1.Count == 1 && valid1[0].reel == 1 && valid1[0].direction == "raise";
+
+        // Test 2: center [3,3,5,8,10] with matrix[2][0]==3 -> only lower reel 2
+        var m2 = new List<List<int>>
+        {
+            new List<int> { 1, 3, 2 },   // reel 0: top 1, center 3, bot 2
+            new List<int> { 8, 3, 5 },   // reel 1: top 8, center 3, bot 5
+            new List<int> { 3, 5, 10 },  // reel 2: top 3, center 5, bot 10 (lower brings 3 to center)
+            new List<int> { 0, 8, 0 },   // reel 3: center 8
+            new List<int> { 0, 10, 0 }   // reel 4: center 10
+        };
+        var valid2 = EvaluateValidMovesForMatrix(m2);
+        bool t2Passed = valid2.Count == 1 && valid2[0].reel == 2 && valid2[0].direction == "lower";
+
+        if (t1Passed && t2Passed)
+        {
+            Debug.Log("<color=green>[NudgeController] FF: Self-Test PASSED! (T1: only raise reel 1, T2: only lower reel 2)</color>");
+        }
+        else
+        {
+            Debug.LogError($"[NudgeController] FF: Self-Test FAILED! T1 passed: {t1Passed}, T2 passed: {t2Passed}");
+        }
+    }
+#endif
+
     /// <summary>
-    /// FF: Task 1 & Task 3 - Returns first valid nudge move for Autoplay or fallback.
+    /// FF: Returns first valid nudge move for Autoplay or fallback.
     /// </summary>
     public bool TryGetFirstValidNudge(out int reel, out string direction)
     {
@@ -229,13 +339,34 @@ public class NudgeController : MonoBehaviour
     }
 
     /// <summary>
-    /// FF: Disables all 6 nudge buttons instantly and resets them to inactive state.
+    /// FF: Kills active tweens, resets scales to Vector3.one, and disables/hides all 6 nudge buttons.
     /// </summary>
     public void DisableAllButtons()
     {
         validNudges.Clear();
-        bool[] allFalse = new bool[] { false, false, false };
-        ApplyButtonVisibility(allFalse, allFalse);
+        KillAllTweensAndResetScale();
+
+        if (raiseButtons != null)
+        {
+            for (int i = 0; i < raiseButtons.Length; i++)
+            {
+                var btn = raiseButtons[i];
+                if (btn == null) continue;
+                btn.interactable = false;
+                btn.gameObject.SetActive(false);
+            }
+        }
+
+        if (lowerButtons != null)
+        {
+            for (int i = 0; i < lowerButtons.Length; i++)
+            {
+                var btn = lowerButtons[i];
+                if (btn == null) continue;
+                btn.interactable = false;
+                btn.gameObject.SetActive(false);
+            }
+        }
 
         if (nudgeContainer != null)
         {
@@ -244,19 +375,44 @@ public class NudgeController : MonoBehaviour
     }
 
     /// <summary>
-    /// FF: Fallback - Enables and shows all 6 buttons.
+    /// FF: Kills active DOTween tweens on all nudge buttons and resets their scale to Vector3.one.
     /// </summary>
-    private void EnableAllButtons()
+    private void KillAllTweensAndResetScale()
     {
-        bool[] allTrue = new bool[] { true, true, true };
-        ApplyButtonVisibility(allTrue, allTrue);
+        if (raiseButtons != null)
+        {
+            for (int i = 0; i < raiseButtons.Length; i++)
+            {
+                if (raiseButtons[i] != null)
+                {
+                    raiseButtons[i].transform.DOKill();
+                    raiseButtons[i].transform.localScale = Vector3.one;
+                }
+            }
+        }
+
+        if (lowerButtons != null)
+        {
+            for (int i = 0; i < lowerButtons.Length; i++)
+            {
+                if (lowerButtons[i] != null)
+                {
+                    lowerButtons[i].transform.DOKill();
+                    lowerButtons[i].transform.localScale = Vector3.one;
+                }
+            }
+        }
     }
 
     /// <summary>
-    /// FF: Applies visibility and interactability to raise and lower buttons.
+    /// FF: Shows all 6 buttons and makes them interactable.
+    /// Valid buttons pulse continuously (1 -> pulseScale -> 1).
+    /// Invalid buttons stay at scale 1 without pulse.
     /// </summary>
-    private void ApplyButtonVisibility(bool[] raiseActive, bool[] lowerActive)
+    private void ApplyButtonStates(bool[] raiseValid, bool[] lowerValid)
     {
+        KillAllTweensAndResetScale();
+
         // 3 Raise Buttons
         if (raiseButtons != null)
         {
@@ -265,9 +421,16 @@ public class NudgeController : MonoBehaviour
                 var btn = raiseButtons[i];
                 if (btn == null) continue;
 
-                bool active = raiseActive != null && i < raiseActive.Length && raiseActive[i];
-                btn.interactable = active;
-                btn.gameObject.SetActive(active);
+                btn.gameObject.SetActive(true);
+                btn.interactable = true;
+
+                bool isValid = raiseValid != null && i < raiseValid.Length && raiseValid[i];
+                if (isValid)
+                {
+                    btn.transform.DOScale(pulseScale, pulseHalfDuration)
+                        .SetEase(Ease.InOutSine)
+                        .SetLoops(-1, LoopType.Yoyo);
+                }
             }
         }
 
@@ -279,16 +442,23 @@ public class NudgeController : MonoBehaviour
                 var btn = lowerButtons[i];
                 if (btn == null) continue;
 
-                bool active = lowerActive != null && i < lowerActive.Length && lowerActive[i];
-                btn.interactable = active;
-                btn.gameObject.SetActive(active);
+                btn.gameObject.SetActive(true);
+                btn.interactable = true;
+
+                bool isValid = lowerValid != null && i < lowerValid.Length && lowerValid[i];
+                if (isValid)
+                {
+                    btn.transform.DOScale(pulseScale, pulseHalfDuration)
+                        .SetEase(Ease.InOutSine)
+                        .SetLoops(-1, LoopType.Yoyo);
+                }
             }
         }
     }
 
     private void OnNudgeClicked(int reelIndex, string direction)
     {
-        // FF: Immediately disable all 6 buttons (debouncing prevents spam-tapping)
+        // FF: Immediately kill tweens, reset scale, and disable all 6 buttons (debouncing prevents spam-tapping)
         DisableAllButtons();
 
         // Play audio feedback

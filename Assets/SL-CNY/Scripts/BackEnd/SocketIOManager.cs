@@ -66,10 +66,20 @@ public class SocketIOManager : MonoBehaviour
     socketSetupStarted = false;
 
     for (int i = 0; i < buttons.Count; i++)
+    // FF: JACKPOT_OPEN must never be sent from client (server decides everything)
+    // Buttons are unhooked to prevent client-side jackpot tampering.
+    if (buttons != null)
     {
       buttons[i].onClick.RemoveAllListeners();
       string buttonName = buttons[i].name;
       buttons[i].onClick.AddListener(() => SendJackpotOpen(buttonName));
+     /* for (int i = 0; i < buttons.Count; i++)
+      {
+        if (buttons[i] != null)
+        {
+          buttons[i].onClick.RemoveAllListeners();
+        }
+      }*/
     }
   }
 
@@ -320,6 +330,16 @@ public class SocketIOManager : MonoBehaviour
     try
     {
       var initData = JsonConvert.DeserializeObject<InitData>(jsonData);
+
+      // FF: Task 7 - Parse state; log it and pending raw
+      if (initData.state != null)
+      {
+          string stateJson = JsonConvert.SerializeObject(initData.state);
+          string pendingJson = initData.state.pending != null ? initData.state.pending.ToString(Formatting.None) : "null";
+          Debug.Log($"[FF initData.state] {stateJson}");
+          Debug.Log($"[FF initData.state.pending] {pendingJson}");
+      }
+
       var gameConfig = InitDataConverter.ConvertToGameConfig(initData);
       var playerData = InitDataConverter.ConvertToPlayerData(initData.player);
       var initialMatrix = GenerateRandomMatrix(gameConfig.rowCount, gameConfig.symbolCount, gameConfig.scatterSymbolId);
@@ -327,6 +347,7 @@ public class SocketIOManager : MonoBehaviour
       isInitialized = true;
 
       gameManager.OnInitDataReceived(gameConfig, playerData, initialMatrix);
+      gameManager.OnInitDataReceived(gameConfig, playerData, initialMatrix, initData.state);
 
       if (initData.jackpotData != null && initData.jackpotData.values != null && uiManager != null)
       {

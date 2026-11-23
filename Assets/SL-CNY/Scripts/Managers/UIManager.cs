@@ -12,6 +12,10 @@ public class UIManager : MonoBehaviour
     [SerializeField] private GameManager gameManager;
     [SerializeField] private PopupManager popupManager;
     [SerializeField] private JSFunctCalls jsFunctCalls;
+    // FF: Task 6 - SlotView reference for grid layout switch
+    [SerializeField] private SlotView slotView;
+    // FF: Task 2 - NudgeController reference for free-game mode switch
+    [SerializeField] private NudgeController nudgeController;
 
     [Header("Loading & Intro")]
     [SerializeField] private GameObject gameScreen;
@@ -75,6 +79,22 @@ public class UIManager : MonoBehaviour
     [SerializeField] private Button uwpTakeButtonPortrait;
     [Header("Universal Win Popup - Star Particle Burst")]
     [SerializeField] private StarFountain starFountain;
+
+    // FF: Task 4 - Retrigger popup
+    [Header("FF: Retrigger Popup")]
+    [SerializeField] private GameObject retriggerPopup;
+
+    // FF: Task 8 - Jackpot win popup
+    [Header("FF: Jackpot Win Popup")]
+    [SerializeField] private GameObject jackpotPanel;
+    [SerializeField] private TMP_Text jackpotTierText;
+    [SerializeField] private TMP_Text jackpotAmountText;
+    [SerializeField] private Button jackpotTakeButton;
+
+    // FF: Task 2 - Free Game Mode single switch
+    [Header("Free Game Mode")]
+    [SerializeField] private GameObject[] hideInFreeGames;
+    [SerializeField] private GameObject[] showInFreeGames;
 
     [Header("Spin Button")]
     [SerializeField] private Button spinButton;
@@ -215,6 +235,10 @@ public class UIManager : MonoBehaviour
     private Tween winTween;
     private double totalFreeSpinWin = 0;
     private int totalFreeSpinsAwarded = 0;
+
+    // FF: Task 5 - Balance display hold during Free Games
+    private bool isFreeSpinsBalanceFrozen = false;
+    private double frozenFreeSpinsBalance = 0;
 
     private int initialFreeSpins = 0;
 
@@ -624,7 +648,10 @@ public class UIManager : MonoBehaviour
         UpdateBalanceDisplay();
         if (result != null)
         {
-            double displayWin = (gameManager != null && gameManager.isInFreeSpins) ? result.serverTotalRoundWin : result.winAmount;
+            // FF: Task 4 - During free games round total from totalFreeSpinsWin
+            double displayWin = (gameManager != null && gameManager.isInFreeSpins)
+                ? (result.totalFreeSpinsWin > 0 ? result.totalFreeSpinsWin : result.serverTotalRoundWin)
+                : result.winAmount;
             UpdateWinDisplay(displayWin);
         }
     }
@@ -633,7 +660,10 @@ public class UIManager : MonoBehaviour
     {
         if (result != null)
         {
-            double displayWin = (gameManager != null && gameManager.isInFreeSpins) ? result.serverTotalRoundWin : result.winAmount;
+            // FF: Task 4 - During free games round total from totalFreeSpinsWin
+            double displayWin = (gameManager != null && gameManager.isInFreeSpins)
+                ? (result.totalFreeSpinsWin > 0 ? result.totalFreeSpinsWin : result.serverTotalRoundWin)
+                : result.winAmount;
             UpdateWinDisplay(displayWin);
         }
         UpdateBalanceDisplay();
@@ -1177,17 +1207,156 @@ public class UIManager : MonoBehaviour
         });
     }
 
+    private SlotView GetSlotView()
+    {
+        if (slotView != null) return slotView;
+        if (gameManager != null) return gameManager.SlotView;
+        return null;
+    }
+
+    // FF: Task 2 - One switch for free-game mode
+    internal void SetFreeGameMode(bool on)
+    {
+        if (hideInFreeGames != null)
+        {
+            for (int i = 0; i < hideInFreeGames.Length; i++)
+            {
+                if (hideInFreeGames[i] != null) hideInFreeGames[i].SetActive(!on);
+            }
+        }
+
+        if (showInFreeGames != null)
+        {
+            for (int i = 0; i < showInFreeGames.Length; i++)
+            {
+                if (showInFreeGames[i] != null) showInFreeGames[i].SetActive(on);
+            }
+        }
+
+        SetBetControlsEnabled(!on);
+        GetSlotView()?.SetFreeGameLayout(on);
+        GetSlotView()?.SetAllSideCellsVisible(on);
+
+        var nc = nudgeController != null ? nudgeController : (gameManager != null ? gameManager.nudgeController : null);
+        if (nc != null)
+        {
+            nc.DisableAllButtons();
+        }
+
+        if (on)
+        {
+            AudioManager.Instance?.PlayFreeSpinBg();
+        }
+        else
+        {
+            AudioManager.Instance?.PlayMainBg();
+        }
+    }
+
     private void StartFreeSpinsSequence(int spinsAwarded)
     {
         totalFreeSpinWin = 0;
         initialFreeSpins = spinsAwarded;
         totalFreeSpinsAwarded = spinsAwarded;
+
+        // FF: Task 5 - Freeze balance display for the whole free spins round
+        isFreeSpinsBalanceFrozen = true;
+        frozenFreeSpinsBalance = (gameManager != null && gameManager.playerData != null) ? gameManager.playerData.balance : 0;
+        UpdateBalanceDisplay();
+
+        // FF: Task 6 - Grid layout switch to full 5x3 for Free Games
+        GetSlotView()?.SetFreeGameLayout(true);
         
         if (gameLogoObject) gameLogoObject.SetActive(false);
+        // FF: Task 2 - One switch for free-game mode
+        SetFreeGameMode(true);
 
         UpdateFreeSpinCount(0, spinsAwarded);
         UpdateWinDisplay(0);
         gameManager.StartFirstFreeSpin();
+    }
+
+    // FF: Task 4 - Retrigger popup
+    internal void ShowRetrigger(int spins, System.Action onDone)
+    {
+        if (retriggerPopup == null)
+        {
+            onDone?.Invoke();
+            return;
+        }
+
+        retriggerPopup.SetActive(true);
+        var btn = retriggerPopup.GetComponentInChildren<Button>();
+        bool completed = false;
+
+        System.Action finish = () =>
+        {
+            if (completed) return;
+            completed = true;
+            if (retriggerPopup != null) retriggerPopup.SetActive(false);
+            onDone?.Invoke();
+        };
+
+        if (btn != null)
+        {
+            btn.onClick.RemoveAllListeners();
+            btn.onClick.AddListener(() => finish());
+        }
+
+        StartCoroutine(AutoDismissRetrigger(2.0f, finish));
+    }
+
+    private IEnumerator AutoDismissRetrigger(float delay, System.Action onDismiss)
+    {
+        yield return new WaitForSeconds(delay);
+        onDismiss?.Invoke();
+    }
+
+    // FF: Task 8 - Jackpot win hook
+    internal void ShowJackpotWin(string tier, double amount, System.Action onClose)
+    {
+        if (jackpotPanel == null)
+        {
+            onClose?.Invoke();
+            return;
+        }
+
+        jackpotPanel.SetActive(true);
+        if (jackpotTierText != null)
+        {
+            jackpotTierText.text = tier ?? "JACKPOT";
+        }
+
+        if (jackpotAmountText != null)
+        {
+            jackpotAmountText.text = "0.00";
+            DOTween.To(() => 0.0, x => jackpotAmountText.text = FormatAmount(x), amount, 2.0f)
+                .SetEase(Ease.Linear);
+        }
+
+        if (jackpotTakeButton != null)
+        {
+            jackpotTakeButton.onClick.RemoveAllListeners();
+            jackpotTakeButton.onClick.AddListener(() =>
+            {
+                if (jackpotPanel != null) jackpotPanel.SetActive(false);
+                onClose?.Invoke();
+            });
+        }
+        else
+        {
+            StartCoroutine(AutoDismissJackpot(3.0f, () =>
+            {
+                if (jackpotPanel != null) jackpotPanel.SetActive(false);
+                onClose?.Invoke();
+            }));
+        }
+    }
+
+    private IEnumerator AutoDismissJackpot(float delay, System.Action onDismiss)
+    {
+        yield return new WaitForSeconds(delay);
+        onDismiss?.Invoke();
     }
 
     internal void OnFreeSpinsEnded(double serverTotalRoundWin, int serverTotalSpinsUsed)
@@ -1197,6 +1366,15 @@ public class UIManager : MonoBehaviour
 
         ShowUniversalWinPopup(WinPopupType.FreeSpinComplete, serverTotalRoundWin, 0, () =>
         {
+            // FF: Task 5 - Unfreeze balance display after outcome panel TAKE
+            isFreeSpinsBalanceFrozen = false;
+            UpdateBalanceDisplay();
+
+            // FF: Task 6 - Switch grid layout back to base game
+            GetSlotView()?.SetFreeGameLayout(false);
+            // FF: Task 2 - One switch for free-game mode
+            SetFreeGameMode(false);
+
             StartCoroutine(EndFreeSpinsTransitionSequence());
         });
     }
@@ -1237,6 +1415,7 @@ public class UIManager : MonoBehaviour
         }
     }
 
+    // FF: Task 2b & Task 4 - Header "FREE {remaining} SPINS" counting down
     internal void UpdateFreeSpinCount(int playedSpins, int totalSpins = -1)
     {
         if (totalSpins > 0)
@@ -1244,8 +1423,18 @@ public class UIManager : MonoBehaviour
             totalFreeSpinsAwarded = totalSpins;
         }
 
+        int remaining = (totalFreeSpinsAwarded >= playedSpins && totalSpins > 0)
+            ? (totalFreeSpinsAwarded - playedSpins)
+            : playedSpins;
+
         if (freeSpinCountContainer) freeSpinCountContainer.SetActive(true);
-        if (remainingFreeSpinsText) remainingFreeSpinsText.text = $"FREE GAME  {playedSpins}  OF  {totalFreeSpinsAwarded}";
+        if (remainingFreeSpinsText) remainingFreeSpinsText.text = $"FREE {remaining} SPINS";
+    }
+
+    internal void UpdateFreeSpinRemainingCount(int remaining)
+    {
+        if (freeSpinCountContainer) freeSpinCountContainer.SetActive(true);
+        if (remainingFreeSpinsText) remainingFreeSpinsText.text = $"FREE {remaining} SPINS";
     }
 
     #endregion
@@ -1354,10 +1543,34 @@ public class UIManager : MonoBehaviour
 
     internal void UpdateBalanceDisplay()
     {
-        SetTMPText(balanceText, balanceTextPortrait, "BALANCE : " + FormatAmount(gameManager.playerData.balance));
+        // FF: Task 5 - Free games: display frozen for the whole round
+        double displayBalance;
+        if (isFreeSpinsBalanceFrozen || (gameManager != null && gameManager.isInFreeSpins))
+        {
+            displayBalance = frozenFreeSpinsBalance;
+        }
+        else
+        {
+            displayBalance = (gameManager != null && gameManager.playerData != null) ? gameManager.playerData.balance : 0;
+        }
+        SetTMPText(balanceText, balanceTextPortrait, "BALANCE : " + FormatAmount(displayBalance));
     }
 
-    private void UpdateWinDisplay(double amount)
+    // FF: Task 5 - Helper methods to freeze/unfreeze balance display
+    internal void FreezeBalanceDisplay(double balance)
+    {
+        isFreeSpinsBalanceFrozen = true;
+        frozenFreeSpinsBalance = balance;
+        UpdateBalanceDisplay();
+    }
+
+    internal void UnfreezeBalanceDisplay()
+    {
+        isFreeSpinsBalanceFrozen = false;
+        UpdateBalanceDisplay();
+    }
+
+    internal void UpdateWinDisplay(double amount)
     {
         currentWinDisplayValue = amount;
         if (winAmountText) winAmountText.text = FormatAmount(amount);

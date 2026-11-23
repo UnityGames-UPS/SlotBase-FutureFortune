@@ -14,6 +14,20 @@ public class InitData
     public ServerUIData uiData;
     public ServerPlayer player;
     public JackpotData jackpotData;
+    // FF: Task 7 - Server state on initData
+    public ServerState state;
+}
+
+// FF: Task 7 - InitData State for reconnect/refresh
+[Serializable]
+public class ServerState
+{
+    public int freeSpinsRemaining;
+    public double totalFreeSpinsWin;
+    public bool isFreeGame;
+    public bool awaitingNudge;
+    [Newtonsoft.Json.JsonProperty("pending")]
+    public Newtonsoft.Json.Linq.JToken pending;
 }
 
 [Serializable]
@@ -44,7 +58,7 @@ public class ServerGameData
 {
     public List<List<int>> lines;
     public List<double> bets;
-    public double creditDivisor = 25;
+    public double creditDivisor = 20; // FF: Task 2d - Default creditDivisor fallback 20
     public int totalLines;
 }
 
@@ -177,6 +191,83 @@ public class ServerPayload
     public List<int> above;
     public List<int> below;
     public bool awaitingNudge;
+    public List<ServerNudgeOption> nudgeOptions; // FF: Server pre-calculated valid moves
+
+    // FF: Real server fields
+    public List<List<int>> startMatrix;
+    public List<List<int>> matrix;
+    public List<ServerLineWin> lineWins;
+    public double lineWin;
+    public ServerScatter scatter;
+    public ServerNudgeApplied nudge;
+    public double bonusMultiplier;
+    public int freeSpinsAwarded;
+    public int freeSpinsRemaining;
+    public double totalFreeSpinsWin;
+    public bool isFreeSpin;
+    public ServerJackpot jackpot;
+    public double coin;
+}
+
+[Serializable]
+public class ServerLineWin
+{
+    // FF: Task 1 - Server sends lineIndex (0-based) and matchCount, keep line/count for backward compatibility
+    public int lineIndex = -1;
+    public int line = -1;
+    public int symbolId;
+    public string symbolName;
+    public int matchCount = -1;
+    public int count = -1;
+    public double basePayout;
+    public double payoutCredits;
+    public double multiplier = 1.0;
+    public double winInCash;
+    public List<ServerPosition> positions;
+
+    public int GetLineIndex()
+    {
+        if (lineIndex >= 0) return lineIndex;
+        if (line > 0) return line - 1;
+        return 0;
+    }
+
+    public int GetMatchCount()
+    {
+        if (matchCount > 0) return matchCount;
+        if (count > 0) return count;
+        return 0;
+    }
+
+    public double GetPayout() => basePayout > 0 ? basePayout : payoutCredits;
+}
+
+[Serializable]
+public class ServerScatter
+{
+    public bool triggered;
+    public int count;
+    public List<ServerPosition> positions;
+    public double payoutCredits;
+    public double winInCash;
+    public int spinsAwarded;
+    public string payMode;
+}
+
+[Serializable]
+public class ServerNudgeApplied
+{
+    public bool applied;
+    public int reel;
+    public string direction;
+}
+
+[Serializable]
+public class ServerJackpot
+{
+    public bool triggered;
+    public string tier;
+    public double amount;
 }
 
 [Serializable]
@@ -274,6 +365,13 @@ public class JackpotOpenPayload
 }
 
 [Serializable]
+public class ServerNudgeOption
+{
+    public int reel;
+    public string direction;
+}
+
+[Serializable]
 public class NudgeRequest
 {
     public string type = "BONUS";      // FF server: nudge is sent as a BONUS action
@@ -311,7 +409,7 @@ public class GameConfig
     public int scatterSymbolId = 4;    // FF: Bonus (Shooting Star) is ID 4
 
     public int betMultiplier = 1;      // CNY is cash-bet based, multiplier default is 1
-    public double creditDivisor = 25;  // Credit divisor sent in initData
+    public double creditDivisor = 20;  // FF: Task 2d - Default creditDivisor fallback 20
     public int maxWinMultiplier = 10000;
     public int minWinMultiplier = 10;
     public int initialFreeSpins = 12;
@@ -372,6 +470,19 @@ public class SpinResult
     public List<int> above;
     public List<int> below;
     public bool awaitingNudge;
+    public List<ServerNudgeOption> nudgeOptions; // FF: Server pre-calculated valid moves
+
+    // FF: Task 3 - Real server fields
+    public List<ServerLineWin> lineWins;
+    public double lineWin;
+    public ServerScatter scatter;
+    public ServerNudgeApplied nudge;
+    public double bonusMultiplier;
+    public int freeSpinsAwarded;
+    public int freeSpinsRemaining;
+    public double totalFreeSpinsWin;
+    public bool isFreeSpin;
+    public ServerJackpot jackpot;
 
     public double GetMoneyBagWin()
     {
@@ -507,7 +618,7 @@ public static class InitDataConverter
             paylineCount = serverData.gameData.totalLines,
             paylines = serverData.gameData.lines,
             availableBets = serverData.gameData.bets,
-            creditDivisor = (serverData.gameData != null && serverData.gameData.creditDivisor > 0) ? serverData.gameData.creditDivisor : 25,
+            creditDivisor = (serverData.gameData != null && serverData.gameData.creditDivisor > 0) ? serverData.gameData.creditDivisor : 20, // FF: Task 2d
             symbols = new List<SymbolInfo>()
         };
 
@@ -581,10 +692,17 @@ public static class InitDataConverter
     /// <summary>
     /// Converts server response to client SpinResult
     /// </summary>
-    internal static SpinResult ConvertServerResponseToSpinResult(ServerSpinResponse serverResponse, double currentBalance, double betAmount, GameConfig gameConfig)
+    public static SpinResult ConvertServerResponseToSpinResult(ServerSpinResponse serverResponse, double currentBalance, double betAmount, GameConfig gameConfig)
     {
-        double winAmountVal = serverResponse.payload.winAmount > 0 ? serverResponse.payload.winAmount : serverResponse.payload.totalWin;
-        double totalPay = (gameConfig != null && gameConfig.creditDivisor > 0) ? betAmount * gameConfig.creditDivisor : betAmount * 25;
+        double winAmountVal = 0;
+        if (serverResponse.payload != null)
+        {
+            winAmountVal = serverResponse.payload.winAmount > 0 
+                ? serverResponse.payload.winAmount 
+                : (serverResponse.payload.lineWin > 0 ? serverResponse.payload.lineWin : serverResponse.payload.totalWin);
+        }
+
+        double totalPay = (gameConfig != null && gameConfig.creditDivisor > 0) ? betAmount * gameConfig.creditDivisor : betAmount * 20; // FF: Task 2d
         double newBalance = serverResponse.player?.balance ?? CalculateNewBalance(currentBalance, totalPay, winAmountVal);
 
         int spinsRemaining = 0;
@@ -593,33 +711,88 @@ public static class InitDataConverter
         double totalRoundWin = 0;
         bool isRoundOver = false;
 
-        if (serverResponse.payload.freeGames != null)
+        // FF: Task 4 - Real server free games fields
+        if (serverResponse.payload != null)
         {
-            spinsRemaining = serverResponse.payload.freeGames.totalAwarded - serverResponse.payload.freeGames.played;
-            spinsUsed = serverResponse.payload.freeGames.played;
-            totalSpins = serverResponse.payload.freeGames.totalAwarded;
-            totalRoundWin = serverResponse.payload.freeGames.totalFreeGamesWin;
-            isRoundOver = serverResponse.payload.freeGames.played >= serverResponse.payload.freeGames.totalAwarded && serverResponse.payload.freeGames.totalAwarded > 0;
-        }
-        else
-        {
-            isRoundOver = serverResponse.payload.isRoundOver;
-            totalRoundWin = serverResponse.payload.totalRoundWin;
+            if (serverResponse.payload.freeSpinsRemaining > 0 || serverResponse.payload.freeSpinsAwarded > 0 || serverResponse.payload.isFreeSpin)
+            {
+                spinsRemaining = serverResponse.payload.freeSpinsRemaining;
+                totalRoundWin = serverResponse.payload.totalFreeSpinsWin > 0 ? serverResponse.payload.totalFreeSpinsWin : serverResponse.payload.totalRoundWin;
+                totalSpins = spinsRemaining + serverResponse.payload.freeSpinsAwarded;
+                isRoundOver = serverResponse.payload.isRoundOver || (serverResponse.payload.isFreeSpin && serverResponse.payload.freeSpinsRemaining == 0);
+            }
+            else if (serverResponse.payload.freeGames != null)
+            {
+                // Fallback to legacy freeGames object
+                spinsRemaining = serverResponse.payload.freeGames.totalAwarded - serverResponse.payload.freeGames.played;
+                spinsUsed = serverResponse.payload.freeGames.played;
+                totalSpins = serverResponse.payload.freeGames.totalAwarded;
+                totalRoundWin = serverResponse.payload.freeGames.totalFreeGamesWin;
+                isRoundOver = serverResponse.payload.freeGames.played >= serverResponse.payload.freeGames.totalAwarded && serverResponse.payload.freeGames.totalAwarded > 0;
+            }
+            else
+            {
+                // FF: Task 1 - Normal base spins send isRoundOver=true and totalRoundWin=winAmount.
+                // Do NOT mark isRoundOver as true for free spins handling unless actually in free spins.
+                isRoundOver = false;
+                totalRoundWin = 0;
+            }
         }
 
-        double grandTotalWinVal = serverResponse.payload.grandTotalWin > 0 
-            ? serverResponse.payload.grandTotalWin 
-            : (winAmountVal + (serverResponse.payload.moneyBag != null && serverResponse.payload.moneyBag.result != null ? serverResponse.payload.moneyBag.result.winInCash : 0) + (serverResponse.payload.uSpin != null && serverResponse.payload.uSpin.result != null ? serverResponse.payload.uSpin.result.winInCash : 0));
+        double grandTotalWinVal = (serverResponse.payload != null && serverResponse.payload.grandTotalWin > 0)
+            ? serverResponse.payload.grandTotalWin
+            : winAmountVal;
+
+        // FF: Task 3 - Convert lineWins (primary), waysWins (fallback), and append scatter
+        var winLinesList = ConvertWinningLines(serverResponse.payload?.lineWins, serverResponse.payload?.waysWins, serverResponse.payload?.scatter, gameConfig);
+
+        UnityEngine.Debug.Log($"[FF SpinResult] winAmount: {winAmountVal}, lineWins: {serverResponse.payload?.lineWins?.Count ?? 0}, scatterTriggered: {serverResponse.payload?.scatter?.triggered ?? false}, freeSpinsRemaining: {spinsRemaining}");
+
+        FreeSpinData fsData = null;
+        if (serverResponse.payload != null)
+        {
+            if (serverResponse.payload.freeSpinsAwarded > 0 && !serverResponse.payload.isFreeSpin)
+            {
+                fsData = new FreeSpinData
+                {
+                    isTriggered = true,
+                    spinsAwarded = serverResponse.payload.freeSpinsAwarded,
+                    remainingSpins = serverResponse.payload.freeSpinsRemaining > 0 ? serverResponse.payload.freeSpinsRemaining : serverResponse.payload.freeSpinsAwarded,
+                    isBought = false
+                };
+            }
+            else if (serverResponse.payload.freeGames != null && serverResponse.payload.freeGames.triggered)
+            {
+                fsData = new FreeSpinData
+                {
+                    isTriggered = true,
+                    spinsAwarded = serverResponse.payload.freeGames.totalAwarded,
+                    remainingSpins = serverResponse.payload.freeGames.totalAwarded - serverResponse.payload.freeGames.played,
+                    isBought = false
+                };
+            }
+        }
 
         var result = new SpinResult
         {
             resultMatrix = ConvertReelsToMatrix(serverResponse.payload?.reels, serverResponse.matrix, serverResponse.payload?.waysWins, gameConfig),
             winAmount = winAmountVal,
             grandTotalWin = grandTotalWinVal,
-            winLines = ConvertWinningLines(serverResponse.payload?.waysWins, gameConfig),
+            winLines = winLinesList,
+            lineWins = serverResponse.payload?.lineWins,
+            lineWin = serverResponse.payload?.lineWin ?? 0,
+            scatter = serverResponse.payload?.scatter,
+            nudge = serverResponse.payload?.nudge,
+            bonusMultiplier = serverResponse.payload?.bonusMultiplier ?? 1,
+            freeSpinsAwarded = serverResponse.payload?.freeSpinsAwarded ?? 0,
+            freeSpinsRemaining = spinsRemaining,
+            totalFreeSpinsWin = totalRoundWin,
+            isFreeSpin = serverResponse.payload?.isFreeSpin ?? false,
+            jackpot = serverResponse.payload?.jackpot,
             above = serverResponse.payload?.above,
             below = serverResponse.payload?.below,
             awaitingNudge = serverResponse.payload != null && serverResponse.payload.awaitingNudge,
+            nudgeOptions = serverResponse.payload?.nudgeOptions,
 
             playerData = new PlayerData
             {
@@ -627,22 +800,14 @@ public static class InitDataConverter
                 currentBetIndex = 0
             },
 
-            freeSpinData = (serverResponse.payload.freeGames != null && serverResponse.payload.freeGames.triggered)
-                ? new FreeSpinData
-                {
-                    isTriggered = true,
-                    spinsAwarded = serverResponse.payload.freeGames.totalAwarded,
-                    remainingSpins = serverResponse.payload.freeGames.totalAwarded - serverResponse.payload.freeGames.played,
-                    isBought = false
-                }
-                : null,
+            freeSpinData = fsData,
 
-            scatterData = serverResponse.payload.scatterTriggered
+            scatterData = (serverResponse.payload != null && (serverResponse.payload.scatterTriggered || (serverResponse.payload.scatter != null && serverResponse.payload.scatter.triggered)))
                 ? new ScatterData
                 {
                     isTriggered = true,
-                    scatterCount = serverResponse.payload.scatterCount,
-                    winAmount = 0
+                    scatterCount = serverResponse.payload.scatter != null ? serverResponse.payload.scatter.count : serverResponse.payload.scatterCount,
+                    winAmount = serverResponse.payload.scatter != null ? serverResponse.payload.scatter.winInCash : 0
                 }
                 : null,
 
@@ -655,7 +820,7 @@ public static class InitDataConverter
             serverTotalRoundWin = totalRoundWin,
             isRoundOver = isRoundOver,
             
-            uSpinData = (serverResponse.payload.uSpin != null && serverResponse.payload.uSpin.triggered && serverResponse.payload.uSpin.result != null)
+            uSpinData = (serverResponse.payload != null && serverResponse.payload.uSpin != null && serverResponse.payload.uSpin.triggered && serverResponse.payload.uSpin.result != null)
                 ? new USpinResultData
                 {
                     triggered = true,
@@ -667,7 +832,7 @@ public static class InitDataConverter
                 }
                 : null,
                 
-            moneyBagData = (serverResponse.payload.moneyBag != null && serverResponse.payload.moneyBag.triggered && serverResponse.payload.moneyBag.result != null)
+            moneyBagData = (serverResponse.payload != null && serverResponse.payload.moneyBag != null && serverResponse.payload.moneyBag.triggered && serverResponse.payload.moneyBag.result != null)
                 ? new MoneyBagResultData
                 {
                     triggered = true,
@@ -682,7 +847,26 @@ public static class InitDataConverter
         return result;
     }
 
-    private static List<List<int>> ConvertReelsToMatrix(List<List<string>> serverReels, List<List<string>> serverMatrix, List<ServerWaysWin> waysWins, GameConfig gameConfig)
+    // FF: Task 7 - Helper to convert server rows to client columns
+    internal static List<List<int>> ConvertServerRowsToClientColumns(List<List<int>> serverRows)
+    {
+        if (serverRows == null || serverRows.Count == 0) return null;
+        int totalRows = serverRows.Count;
+        int totalCols = serverRows[0].Count;
+        var matrix = new List<List<int>>();
+        for (int col = 0; col < totalCols; col++)
+        {
+            var column = new List<int>();
+            for (int row = 0; row < totalRows; row++)
+            {
+                column.Add(serverRows[row][col]);
+            }
+            matrix.Add(column);
+        }
+        return matrix;
+    }
+
+    internal static List<List<int>> ConvertReelsToMatrix(List<List<string>> serverReels, List<List<string>> serverMatrix, List<ServerWaysWin> waysWins, GameConfig gameConfig)
     {
         var sourceReels = serverMatrix ?? serverReels;
         int rowCount = gameConfig != null ? gameConfig.rowCount : 3;
@@ -741,31 +925,117 @@ public static class InitDataConverter
         return matrix;
     }
 
-    private static List<WinLine> ConvertWinningLines(List<ServerWaysWin> serverWaysWins, GameConfig gameConfig)
+    // FF: Task 3 - Convert lineWins (primary), waysWins (fallback), and append scatter
+    private static List<WinLine> ConvertWinningLines(
+        List<ServerLineWin> serverLineWins,
+        List<ServerWaysWin> serverWaysWins,
+        ServerScatter scatter,
+        GameConfig gameConfig)
     {
         var winLines = new List<WinLine>();
-        if (serverWaysWins == null) return winLines;
 
-        int index = 0;
-        foreach (var waysWin in serverWaysWins)
+        // 1. Primary: Line wins from server
+        if (serverLineWins != null && serverLineWins.Count > 0)
         {
-            var flatPositions = new List<int>();
-            if (waysWin.matchedPositions != null)
+            foreach (var lw in serverLineWins)
             {
-                foreach (var pos in waysWin.matchedPositions)
+                if (lw == null) continue;
+                var flatPositions = new List<int>();
+
+                // FF: Task 1 - Map lineIndex (0-based) and matchCount
+                int effectiveLineIndex = lw.GetLineIndex();
+                int effectiveMatchCount = lw.GetMatchCount();
+
+                if (lw.positions != null && lw.positions.Count > 0)
                 {
-                    int flatIndex = pos.row * 5 + pos.col;
-                    flatPositions.Add(flatIndex);
+                    foreach (var pos in lw.positions)
+                    {
+                        flatPositions.Add(pos.row * 5 + pos.col);
+                    }
+                }
+                else if (gameConfig != null && gameConfig.paylines != null && gameConfig.paylines.Count > 0)
+                {
+                    // Fallback: build from payline pattern using lineIndex (0-based)
+                    int pIndex = effectiveLineIndex;
+                    if (pIndex >= 0 && pIndex < gameConfig.paylines.Count)
+                    {
+                        var payline = gameConfig.paylines[pIndex];
+                        int matchCount = UnityEngine.Mathf.Clamp(effectiveMatchCount, 0, 5);
+                        for (int col = 0; col < matchCount && col < payline.Count; col++)
+                        {
+                            int row = payline[col];
+                            flatPositions.Add(row * 5 + col);
+                        }
+                    }
+                }
+
+                winLines.Add(new WinLine
+                {
+                    lineId = effectiveLineIndex,
+                    symbolId = lw.symbolId,
+                    positions = flatPositions,
+                    winAmount = lw.winInCash
+                });
+            }
+        }
+        else if (serverWaysWins != null && serverWaysWins.Count > 0)
+        {
+            // Fallback: Legacy ways wins
+            int index = 0;
+            foreach (var waysWin in serverWaysWins)
+            {
+                if (waysWin == null) continue;
+                var flatPositions = new List<int>();
+                if (waysWin.matchedPositions != null)
+                {
+                    foreach (var pos in waysWin.matchedPositions)
+                    {
+                        flatPositions.Add(pos.row * 5 + pos.col);
+                    }
+                }
+
+                winLines.Add(new WinLine
+                {
+                    lineId = index++,
+                    symbolId = waysWin.symbolId,
+                    positions = flatPositions,
+                    winAmount = waysWin.winInCash
+                });
+            }
+        }
+
+        // 2. Add scatter WinLine (symbolId 4) from scatter.positions when scatter.winInCash > 0 and not already covered
+        if (scatter != null && scatter.winInCash > 0)
+        {
+            bool alreadyCovered = false;
+            foreach (var wl in winLines)
+            {
+                if (wl.symbolId == 4 && UnityEngine.Mathf.Approximately((float)wl.winAmount, (float)scatter.winInCash))
+                {
+                    alreadyCovered = true;
+                    break;
                 }
             }
 
-            winLines.Add(new WinLine
+            if (!alreadyCovered)
             {
-                lineId = index++,
-                symbolId = waysWin.symbolId,
-                positions = flatPositions,
-                winAmount = waysWin.winInCash
-            });
+                var flatScatter = new List<int>();
+                if (scatter.positions != null)
+                {
+                    foreach (var pos in scatter.positions)
+                    {
+                        flatScatter.Add(pos.row * 5 + pos.col);
+                    }
+                }
+
+                winLines.Add(new WinLine
+                {
+                    lineId = 999, // Scatter line ID
+                    symbolId = 4, // Bonus / Scatter
+                    positions = flatScatter,
+                    winAmount = scatter.winInCash
+                });
+            }
         }
 
         return winLines;

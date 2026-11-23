@@ -52,6 +52,9 @@ public class GameManager : MonoBehaviour
     private bool waitingForSpecialWin;
 
     // FF: Nudge synchronization flags, references, and coroutines
+    [SerializeField] private bool debugNudge = true; // FF: Task 3 - Debug nudge aid
+    private string nudgedDirection;
+    private List<int> nudgedColBefore;
     private bool nudgeAnimDone;
     private bool nudgeResponseDone;
     private int nudgedReelIndex = -1;
@@ -76,7 +79,7 @@ public class GameManager : MonoBehaviour
         initializationFailed = false;
     }
 
-    internal void OnInitDataReceived(GameConfig config, PlayerData player, List<List<int>> initialMatrix)
+    internal void OnInitDataReceived(GameConfig config, PlayerData player, List<List<int>> initialMatrix, ServerState serverState = null)
     {
         gameConfig = config;
         playerData = player;
@@ -91,6 +94,133 @@ public class GameManager : MonoBehaviour
         if (wheelController != null && gameConfig.uSpinSegments != null)
         {
             wheelController.OverrideSegmentsWithData(gameConfig.uSpinSegments);
+        }
+
+        // FF: Task 7 - Resume after refresh (initData.state)
+        if (serverState != null)
+        {
+            // Case 1: Free games active on resume
+            if (serverState.isFreeGame || serverState.freeSpinsRemaining > 0)
+            {
+                isInFreeSpins = true;
+                freeSpinsRemaining = serverState.freeSpinsRemaining;
+                isInitialized = true;
+                currentState = GameState.Idle;
+
+                if (slotView != null) slotView.SetFreeGameLayout(true);
+                if (uiManager != null)
+                {
+                    uiManager.FreezeBalanceDisplay(playerData.balance);
+                    uiManager.UpdateFreeSpinRemainingCount(freeSpinsRemaining);
+                    if (serverState.totalFreeSpinsWin > 0)
+                    {
+                        uiManager.UpdateWinDisplay(serverState.totalFreeSpinsWin);
+                    }
+                    uiManager.OnGameInitialized();
+                    // FF: Task 2 - One switch for free-game mode on resume
+                    uiManager.SetFreeGameMode(true);
+                    uiManager.OnFreeSpinsStarted(freeSpinsRemaining);
+                }
+                return;
+            }
+
+            // Case 2: Awaiting nudge on resume
+            if (serverState.awaitingNudge)
+            {
+                if (isInFreeSpins)
+                {
+                    // FF: Task 3 - No nudge during free games
+                    Debug.LogWarning("[FF] Server sent awaitingNudge during free games on resume - ignored");
+                }
+                else
+                {
+                bool parsedPending = false;
+                List<List<int>> pendingMatrix = null;
+                List<int> pendingAbove = null;
+                List<int> pendingBelow = null;
+                List<ServerNudgeOption> pendingNudgeOptions = null;
+
+                if (serverState.pending != null && serverState.pending.Type == Newtonsoft.Json.Linq.JTokenType.Object)
+                {
+                    try
+                    {
+                        var pObj = (Newtonsoft.Json.Linq.JObject)serverState.pending;
+                        if (pObj.TryGetValue("matrix", out var mToken))
+                        {
+                            var rawMatrix = mToken.ToObject<List<List<int>>>();
+                            if (rawMatrix != null && rawMatrix.Count > 0)
+                            {
+                                pendingMatrix = InitDataConverter.ConvertServerRowsToClientColumns(rawMatrix);
+                            }
+                        }
+                        if (pObj.TryGetValue("above", out var aToken))
+                        {
+                            pendingAbove = aToken.ToObject<List<int>>();
+                        }
+                        if (pObj.TryGetValue("below", out var bToken))
+                        {
+                            pendingBelow = bToken.ToObject<List<int>>();
+                        }
+                        if (pObj.TryGetValue("nudgeOptions", out var noToken))
+                        {
+                            pendingNudgeOptions = noToken.ToObject<List<ServerNudgeOption>>();
+                        }
+
+                        if (pendingMatrix != null && pendingMatrix.Count == 5 && pendingAbove != null && pendingBelow != null)
+                        {
+                            parsedPending = true;
+                        }
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Debug.LogWarning($"[FF] Failed to parse pending nudge: {ex.Message}");
+                        parsedPending = false;
+                    }
+                }
+
+                if (parsedPending)
+                {
+                    if (slotView != null) slotView.SetInitialMatrix(pendingMatrix);
+
+                    lastResult = new SpinResult
+                    {
+                        resultMatrix = pendingMatrix,
+                        above = pendingAbove,
+                        below = pendingBelow,
+                        nudgeOptions = pendingNudgeOptions,
+                        awaitingNudge = true,
+                        playerData = playerData
+                    };
+
+                    isInitialized = true;
+                    currentState = GameState.AwaitingNudge;
+                    if (uiManager != null)
+                    {
+                        uiManager.OnGameInitialized();
+                        uiManager.DisableControlsForNudge(isAutoPlaying);
+                    }
+
+                    if (nudgeController != null)
+                    {
+                        nudgeController.EnableNudgeMode(pendingAbove, pendingBelow, pendingNudgeOptions);
+                    }
+                    return;
+                }
+                else
+                {
+                    // awaitingNudge but unparsable -> server error popup (never a stuck game)
+                    Debug.LogError("[FF] awaitingNudge is true but pending data is null or unparsable.");
+                    isInitialized = true;
+                    currentState = GameState.Idle;
+                    if (uiManager != null) uiManager.OnGameInitialized();
+                    if (popupManager != null)
+                    {
+                        popupManager.ShowServerError("Pending nudge data could not be recovered. Please reload or contact support.", false);
+                    }
+                    return;
+                }
+            }
+        }
         }
 
         isInitialized = true;
@@ -301,27 +431,35 @@ public class GameManager : MonoBehaviour
         // --- Nudge Phase Handling ---
         if (lastResult != null && lastResult.awaitingNudge)
         {
-            currentState = GameState.AwaitingNudge;
-            if (uiManager != null)
+            // FF: Task 3 - No nudge during free games
+            if (isInFreeSpins)
             {
-                uiManager.OnSpinStopping(lastResult);
-                // FF: Task 5 - Lock spin, bet, settings during nudge phase
-                uiManager.DisableControlsForNudge(isAutoPlaying);
+                Debug.LogWarning("[FF] Server sent awaitingNudge during free games - ignored");
             }
-
-            if (nudgeController != null)
+            else
             {
-                nudgeController.EnableNudgeMode(lastResult.above, lastResult.below);
-            }
+                currentState = GameState.AwaitingNudge;
+                if (uiManager != null)
+                {
+                    uiManager.OnSpinStopping(lastResult);
+                    // FF: Task 5 - Lock spin, bet, settings during nudge phase
+                    uiManager.DisableControlsForNudge(isAutoPlaying);
+                }
 
-            // FF: Task 3 - Autoplay auto-nudge after 0.7s delay
-            if (isAutoPlaying)
-            {
-                if (autoNudgeCoroutine != null) StopCoroutine(autoNudgeCoroutine);
-                autoNudgeCoroutine = StartCoroutine(AutoNudgeRoutine());
-            }
+                if (nudgeController != null)
+                {
+                    nudgeController.EnableNudgeMode(lastResult.above, lastResult.below, lastResult.nudgeOptions);
+                }
 
-            return; // Pause here! Do NOT go to Idle, do NOT enable Spin button
+                // FF: Task 3 - Autoplay auto-nudge after 0.7s delay
+                if (isAutoPlaying)
+                {
+                    if (autoNudgeCoroutine != null) StopCoroutine(autoNudgeCoroutine);
+                    autoNudgeCoroutine = StartCoroutine(AutoNudgeRoutine());
+                }
+
+                return; // Pause here! Do NOT go to Idle, do NOT enable Spin button
+            }
         }
 
         if (lastResult != null && lastResult.winAmount > 0 && lastResult.winLines != null && lastResult.winLines.Count > 0)
@@ -338,10 +476,9 @@ public class GameManager : MonoBehaviour
             }
             else
             {
-                // For normal wins, trigger UI update immediately and enable controls
+                // FF: Task 5 - Balance display updates after win animation completes
                 uiManager.OnSpinStopping(lastResult);
                 uiManager.EnableControlsAfterWinAnimation();
-                uiManager.OnSpinCompleted(lastResult);
                 currentState = GameState.Idle;
                 slotView.ShowWinLineAnimation(lastResult.winLines, OnWinAnimationComplete);
             }
@@ -393,6 +530,9 @@ public class GameManager : MonoBehaviour
             {
                 uiManager.OnSpinStopping(lastResult);
             }
+
+            // FF: Task 5 - Update balance display after win animation completes
+            uiManager.UpdateBalanceDisplay();
         }
 
         StartCoroutine(ProcessSpecialFeaturesAfterWin());
@@ -404,6 +544,37 @@ public class GameManager : MonoBehaviour
         while (waitingForSpecialWin || uiManager.IsSpecialWinActive)
         {
             yield return null;
+        }
+
+        // FF: Task 8 - Jackpot win hook
+        if (lastResult != null && lastResult.jackpot != null && lastResult.jackpot.triggered)
+        {
+            bool jpDone = false;
+            if (uiManager != null)
+            {
+                uiManager.ShowJackpotWin(lastResult.jackpot.tier, lastResult.jackpot.amount, () =>
+                {
+                    jpDone = true;
+                });
+                yield return new WaitUntil(() => jpDone);
+            }
+        }
+
+        // FF: Task 4 - Retrigger in free spins
+        if (isInFreeSpins && lastResult != null && lastResult.freeSpinsAwarded > 0)
+        {
+            freeSpinsRemaining = lastResult.freeSpinsRemaining >= 0 ? lastResult.freeSpinsRemaining : (freeSpinsRemaining + lastResult.freeSpinsAwarded);
+            if (uiManager != null)
+            {
+                uiManager.UpdateFreeSpinRemainingCount(freeSpinsRemaining);
+            }
+
+            bool retriggerDone = false;
+            uiManager.ShowRetrigger(lastResult.freeSpinsAwarded, () =>
+            {
+                retriggerDone = true;
+            });
+            yield return new WaitUntil(() => retriggerDone);
         }
 
         if (lastResult != null && lastResult.uSpinData != null && lastResult.uSpinData.triggered)
@@ -527,22 +698,24 @@ public class GameManager : MonoBehaviour
     {
         lastResult = result;
 
-        // CRITICAL FIX: Update free spin counter IMMEDIATELY when server response arrives
-        // This ensures the display shows the exact server-authoritative played count without lag
-        if (isInFreeSpins && result.serverSpinsRemaining >= 0)
+        // FF: Task 4 - Update free spin counter from freeSpinsRemaining
+        if (isInFreeSpins)
         {
-            freeSpinsRemaining = result.serverSpinsRemaining;
-            freeSpinsUsed = result.serverSpinsUsed;
-            int displayTotalSpins = result.serverTotalSpins;
-
-            if (result.uSpinData != null && result.uSpinData.triggered && result.uSpinData.freeGamesAwarded > 0)
+            int remaining = result.freeSpinsRemaining >= 0 ? result.freeSpinsRemaining : result.serverSpinsRemaining;
+            if (remaining >= 0)
             {
-                // Defer adding the newly won free spins to total count until wheel spin completes and user presses Take!
-                displayTotalSpins -= result.uSpinData.freeGamesAwarded;
-                freeSpinsRemaining -= result.uSpinData.freeGamesAwarded;
-            }
+                freeSpinsRemaining = remaining;
+                freeSpinsUsed = result.serverSpinsUsed;
+                int displayTotalSpins = result.serverTotalSpins;
 
-            uiManager.UpdateFreeSpinCount(freeSpinsUsed, displayTotalSpins);
+                if (result.uSpinData != null && result.uSpinData.triggered && result.uSpinData.freeGamesAwarded > 0)
+                {
+                    displayTotalSpins -= result.uSpinData.freeGamesAwarded;
+                    freeSpinsRemaining -= result.uSpinData.freeGamesAwarded;
+                }
+
+                uiManager.UpdateFreeSpinRemainingCount(freeSpinsRemaining);
+            }
         }
 
         if (result.winLines != null)
@@ -588,6 +761,24 @@ public class GameManager : MonoBehaviour
             slotView.UpdateMatrixAfterNudge(lastResult.resultMatrix);
         }
 
+        // FF: Task 3 - Debug aid: Log resolved nudge
+        if (debugNudge && lastResult != null && lastResult.resultMatrix != null)
+        {
+            string beforeStr = nudgedColBefore != null ? string.Join(",", nudgedColBefore) : "?";
+            string afterStr = (nudgedReelIndex >= 0 && nudgedReelIndex < lastResult.resultMatrix.Count)
+                ? string.Join(",", lastResult.resultMatrix[nudgedReelIndex])
+                : "?";
+
+            var centerList = new List<string>();
+            for (int c = 0; c < lastResult.resultMatrix.Count; c++)
+            {
+                centerList.Add(lastResult.resultMatrix[c].Count > 1 ? lastResult.resultMatrix[c][1].ToString() : "?");
+            }
+            string centerStr = string.Join(",", centerList);
+
+            Debug.Log($"[FF Nudge] reel={nudgedReelIndex} dir={nudgedDirection} before=[{beforeStr}] after=[{afterStr}] center=[{centerStr}] win={lastResult.winAmount}");
+        }
+
         OnReelsStoppedComplete();
     }
 
@@ -600,6 +791,17 @@ public class GameManager : MonoBehaviour
         nudgeAnimDone = false;
         nudgeResponseDone = false;
         nudgedReelIndex = reelIndex;
+        nudgedDirection = direction; // FF: Task 3
+
+        // FF: Task 3 - Record column before nudge for debug log
+        if (slotView != null && slotView.currentDisplayMatrix != null && reelIndex >= 0 && reelIndex < slotView.currentDisplayMatrix.Count)
+        {
+            nudgedColBefore = new List<int>(slotView.currentDisplayMatrix[reelIndex]);
+        }
+        else
+        {
+            nudgedColBefore = null;
+        }
 
         // FF: Task 3 - Cancel pending auto-nudge coroutine if any
         if (autoNudgeCoroutine != null)
@@ -747,9 +949,9 @@ public class GameManager : MonoBehaviour
         uiManager.OnSpinCompleted(lastResult);
 
         // Extract server-authoritative values before nullifying lastResult
-        int serverSpinsRemaining = lastResult.serverSpinsRemaining;
+        int serverSpinsRemaining = (lastResult.freeSpinsRemaining >= 0) ? lastResult.freeSpinsRemaining : lastResult.serverSpinsRemaining;
         int serverSpinsUsed = lastResult.serverSpinsUsed;
-        double serverTotalRoundWin = lastResult.serverTotalRoundWin;
+        double serverTotalRoundWin = lastResult.serverTotalRoundWin > 0 ? lastResult.serverTotalRoundWin : lastResult.totalFreeSpinsWin;
         bool isRoundOver = lastResult.isRoundOver;
 
         // Note: freeSpinsRemaining already updated in OnSpinResultReceived
@@ -923,6 +1125,7 @@ public class GameManager : MonoBehaviour
         freeSpinsUsed = 0;
         waitingForFreeSpinStart = true;
         AudioManager.Instance?.PlayFreeSpinBg();
+        // FF: Task 2 - Free spin music is managed in SetFreeGameMode when START is pressed
 
         int prevTotal = autoPlayTotalRounds;
         int prevRemaining = autoPlayRemainingRounds;
@@ -972,6 +1175,7 @@ public class GameManager : MonoBehaviour
         isInFreeSpins = false;
         freeSpinsRemaining = 0;
         AudioManager.Instance?.PlayMainBg();
+        // FF: Task 2 - Main music is restored in SetFreeGameMode when TAKE is pressed
 
         uiManager.OnFreeSpinsEnded(totalRoundWin, totalSpinsUsed);
 
@@ -1024,6 +1228,12 @@ public class GameManager : MonoBehaviour
             StopAutoPlay();
         }
 
+        // FF: Task 2e - Stop SlotView win animations and hide win boxes on disconnect
+        if (slotView != null)
+        {
+            slotView.StopAllWinAnimations();
+        }
+
         currentState = GameState.Idle;
         // Note: The disconnection popup is shown by SocketIOManager.OnSocketDisconnected()
         // to avoid duplicates. GameManager only cleans up state here.
@@ -1041,7 +1251,7 @@ public class GameManager : MonoBehaviour
 
     internal double GetTotalPay()
     {
-        double divisor = (gameConfig != null && gameConfig.creditDivisor > 0) ? gameConfig.creditDivisor : 25;
+        double divisor = (gameConfig != null && gameConfig.creditDivisor > 0) ? gameConfig.creditDivisor : 20; // FF: Task 2d
         return currentBetAmount * divisor;
     }
 
