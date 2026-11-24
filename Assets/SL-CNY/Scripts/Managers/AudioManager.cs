@@ -33,6 +33,8 @@ public class AudioManager : MonoBehaviour
     [SerializeField] private AudioSource uiSource;
     [SerializeField] private AudioSource wheelSegmentSource;
     [SerializeField] private AudioSource reserveSource;
+    // FF: Optional dedicated source for looping SFX (falls back to reserveSource if null)
+    [SerializeField] private AudioSource loopSfxSource;
 
     [Header("Audio Clips")]
     [SerializeField] private AudioClip clipGameMainBg;
@@ -49,6 +51,39 @@ public class AudioManager : MonoBehaviour
     [SerializeField] private AudioClip clipWheelSegmentTick;
     [SerializeField] private AudioClip clipWinLinePhase1Start;
     [SerializeField] private AudioClip clipReelStop;
+
+    #region FF: Future Fortune Sound Clips
+    [Header("FF Sounds - Reels")]
+    [SerializeField] private AudioClip clipSpinStart;
+    [SerializeField] private AudioClip clipReelSpinLoop;
+    [SerializeField] private AudioClip clipFFReelStop;
+    [SerializeField] private AudioClip clipBonusLand;
+
+    [Header("FF Sounds - Nudge")]
+    [SerializeField] private AudioClip clipNudgeShow;
+    [SerializeField] private AudioClip clipNudgeTap;
+    [SerializeField] private AudioClip clipNudgeSlide;
+
+    [Header("FF Sounds - Wins")]
+    [SerializeField] private AudioClip clipWinSmall;
+    [SerializeField] private AudioClip clipWinBig;
+    [SerializeField] private AudioClip clipCountUpLoop;
+    [SerializeField] private AudioClip clipCountUpEnd;
+
+    [Header("FF Sounds - Free Games")]
+    [SerializeField] private AudioClip clipFreeGamesTrigger;
+    [SerializeField] private AudioClip clipFreeGamesAward;
+    [SerializeField] private AudioClip clipStartButton;
+    [SerializeField] private AudioClip clipGridOpen;
+    [SerializeField] private AudioClip clipGridClose;
+    [SerializeField] private AudioClip clipFreeSpinTick;
+    [SerializeField] private AudioClip clipRetrigger;
+    [SerializeField] private AudioClip clipOutcomeOpen;
+    [SerializeField] private AudioClip clipTake;
+
+    [Header("FF Sounds - Jackpot")]
+    [SerializeField] private AudioClip clipJackpotWin;
+    #endregion
 
     private bool _musicEnabled = true;
     private bool _sfxEnabled   = true;
@@ -104,6 +139,7 @@ public class AudioManager : MonoBehaviour
         if (uiSource           != null) uiSource.volume           = v;
         if (wheelSegmentSource != null) wheelSegmentSource.volume = v;
         if (reserveSource      != null) reserveSource.volume      = v;
+        if (loopSfxSource      != null) loopSfxSource.volume      = v; // FF
     }
 
     /// <summary>
@@ -300,12 +336,173 @@ public class AudioManager : MonoBehaviour
             PlayUISound(clipReelStop);
     }
 
+    #region FF: Future Fortune Sound System
+
+    // FF: Per-clip cooldown tracker to prevent duplicate one-shots in the same frame (e.g. turbo 5 reels stopping together)
+    private readonly System.Collections.Generic.Dictionary<AudioClip, float> _clipLastPlayed = new System.Collections.Generic.Dictionary<AudioClip, float>();
+    private const float MinClipInterval = 0.03f;
+
+    private AudioSource _activeSpinLoopSource;
+    private AudioSource _activeCountUpLoopSource;
+
+    private bool IsClipOnCooldown(AudioClip clip)
+    {
+        if (clip == null) return false;
+        float now = Time.unscaledTime;
+        if (_clipLastPlayed.TryGetValue(clip, out float lastTime))
+        {
+            if (now - lastTime < MinClipInterval) return true;
+        }
+        _clipLastPlayed[clip] = now;
+        return false;
+    }
+
+    /// <summary>
+    /// FF: Plays one-shot SFX with fallback and per-clip cooldown.
+    /// If both ff and fallback are null, remains silent without exceptions.
+    /// </summary>
+    private void PlayOneShot(AudioClip ff, AudioClip fallback, float pitch = 1.0f)
+    {
+        if (!_sfxEnabled) return;
+        AudioClip clip = ff != null ? ff : fallback;
+        if (clip == null) return; // silence
+
+        if (IsClipOnCooldown(clip)) return;
+
+        AudioSource source = null;
+        if (!Mathf.Approximately(pitch, 1.0f))
+        {
+            // Use wheelSegmentSource (or reserveSource) for pitch-adjusted one-shots (e.g. bonus landings)
+            source = wheelSegmentSource != null ? wheelSegmentSource : (reserveSource != null ? reserveSource : uiSource);
+            if (source != null)
+            {
+                source.pitch = pitch;
+                source.PlayOneShot(clip);
+            }
+            return;
+        }
+
+        // Standard non-pitched one-shot
+        if (uiSource != null && !uiSource.isPlaying) source = uiSource;
+        else if (reserveSource != null && !reserveSource.isPlaying) source = reserveSource;
+        else if (wheelSegmentSource != null && !wheelSegmentSource.isPlaying) source = wheelSegmentSource;
+        else source = uiSource != null ? uiSource : reserveSource;
+
+        if (source != null)
+        {
+            source.pitch = 1.0f;
+            source.PlayOneShot(clip);
+        }
+    }
+
+    /// <summary>
+    /// FF: Starts an SFX loop on preferred source (or fallback loopSfxSource/reserveSource/uiSource).
+    /// </summary>
+    private void StartLoop(AudioClip ff, AudioClip fallback, ref AudioSource activeSourceRef, AudioSource preferredSource)
+    {
+        if (!_sfxEnabled) return;
+        AudioClip clip = ff != null ? ff : fallback;
+        if (clip == null) return; // silence if no clip
+
+        AudioSource src = preferredSource;
+        if (src == null) src = loopSfxSource != null ? loopSfxSource : (reserveSource != null ? reserveSource : uiSource);
+        if (src == null) return;
+
+        src.clip = clip;
+        src.loop = true;
+        src.volume = _sfxEnabled ? _sfxVolume : 0f;
+        src.pitch = 1.0f;
+        src.Play();
+        activeSourceRef = src;
+    }
+
+    /// <summary>
+    /// FF: Stops an active SFX loop.
+    /// </summary>
+    private void StopLoop(ref AudioSource activeSourceRef)
+    {
+        if (activeSourceRef != null)
+        {
+            StopSource(activeSourceRef);
+            activeSourceRef = null;
+        }
+    }
+
+    // ── REELS ──────────────────────────────────────────────────────────
+    internal void PlayFFSpinStart() => PlayOneShot(clipSpinStart, clipPrimaryActionButton);
+
+    internal void StartReelSpinLoop()
+    {
+        AudioSource preferred = loopSfxSource != null ? loopSfxSource : (wheelSegmentSource != null ? wheelSegmentSource : reserveSource);
+        StartLoop(clipReelSpinLoop, null, ref _activeSpinLoopSource, preferred);
+    }
+
+    internal void StopReelSpinLoop() => StopLoop(ref _activeSpinLoopSource);
+
+    internal void PlayFFReelStop() => PlayOneShot(clipFFReelStop, clipReelStop);
+
+    internal void PlayBonusLand(int nth)
+    {
+        float pitch = nth <= 1 ? 1.0f : (nth == 2 ? 1.1f : 1.2f);
+        PlayOneShot(clipBonusLand, clipReelStop, pitch);
+    }
+
+    // ── NUDGE ──────────────────────────────────────────────────────────
+    internal void PlayNudgeShow()  => PlayOneShot(clipNudgeShow, clipPopupOpenClose);
+    internal void PlayNudgeTap()   => PlayOneShot(clipNudgeTap, clipGeneralButtonClick);
+    internal void PlayNudgeSlide() => PlayOneShot(clipNudgeSlide, clipReelStop);
+
+    // ── WINS ───────────────────────────────────────────────────────────
+    internal void PlayWinSmall() => PlayOneShot(clipWinSmall, clipWinLinePhase1Start);
+    internal void PlayWinBig()   => PlayOneShot(clipWinBig, clipWinObjectBg);
+
+    internal void StartCountUpLoop()
+    {
+        AudioSource preferred = reserveSource != null ? reserveSource : uiSource;
+        StartLoop(clipCountUpLoop, null, ref _activeCountUpLoopSource, preferred);
+    }
+
+    internal void StopCountUpLoop() => StopLoop(ref _activeCountUpLoopSource);
+
+    internal void PlayCountUpEnd() => PlayOneShot(clipCountUpEnd, null);
+
+    // ── FREE GAMES ─────────────────────────────────────────────────────
+    internal void PlayFreeGamesTrigger() => PlayOneShot(clipFreeGamesTrigger, clip3UspinWinLineLoop);
+    internal void PlayFreeGamesAward()   => PlayOneShot(clipFreeGamesAward, clipWinObjectBg);
+    internal void PlayStartButton()      => PlayOneShot(clipStartButton, clipPrimaryActionButton);
+    internal void PlayGridOpen()          => PlayOneShot(clipGridOpen, null);
+    internal void PlayGridClose()         => PlayOneShot(clipGridClose, null);
+    internal void PlayFreeSpinTick()      => PlayOneShot(clipFreeSpinTick, null);
+    internal void PlayRetrigger()         => PlayOneShot(clipRetrigger, clipWinObjectBg);
+    internal void PlayOutcomeOpen()       => PlayOneShot(clipOutcomeOpen, clipWinObjectBg);
+    internal void PlayFFTake()            => PlayOneShot(clipTake, clipPrimaryActionButton);
+
+    // ── JACKPOT ────────────────────────────────────────────────────────
+    internal void PlayJackpotWin() => PlayOneShot(clipJackpotWin, clipWinObjectBg);
+
+    // ── SAFETY ─────────────────────────────────────────────────────────
+    internal void StopAllLoops()
+    {
+        StopReelSpinLoop();
+        StopCountUpLoop();
+        StopWinObjectBg();
+        Stop3UspinWinLineLoop();
+        StopFeatureOpenLoop();
+    }
+
+    #endregion
+
     private bool isForceMuted = false;
 
     internal void SetMuteAll(bool forceMute)
     {
         if (forceMute == isForceMuted) return;
         isForceMuted = forceMute;
+
+        if (forceMute)
+        {
+            StopAllLoops(); // FF: Stop all active loops on mute
+        }
 
         AudioListener.volume = forceMute ? 0f : 1f;
     }
@@ -317,6 +514,10 @@ public class AudioManager : MonoBehaviour
 
     private void OnApplicationPause(bool isPaused)
     {
+        if (isPaused)
+        {
+            StopAllLoops(); // FF: Stop all active loops on app pause
+        }
         SetMuteAll(isPaused);
     }
 }

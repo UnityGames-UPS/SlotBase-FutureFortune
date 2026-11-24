@@ -149,7 +149,7 @@ public class SymbolInfoCard : MonoBehaviour
         {
             // SPECIAL SYMBOL: Text alignment CENTER
             infoText.alignment = TextAlignmentOptions.Center;
-            infoText.enableWordWrapping = true;
+            infoText.textWrappingMode = TMPro.TextWrappingModes.Normal;
 if (isUSpin)
 {
     infoText.text = "3 U-Spin symbols trigger the Wheel Bonus feature.";
@@ -167,7 +167,7 @@ else if (isWild)
         {
             // NORMAL SYMBOL: Text alignment FLUSH
             infoText.alignment = TextAlignmentOptions.Flush;
-            infoText.enableWordWrapping = false;
+            infoText.textWrappingMode = TMPro.TextWrappingModes.NoWrap;
 
             double betFactor = 1.0;
             if (gameManager != null)

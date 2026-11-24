@@ -140,6 +140,9 @@ public class NudgeController : MonoBehaviour
             nudgeContainer.SetActive(true);
         }
 
+        // FF: Play nudge show SFX when nudge buttons become available
+        AudioManager.Instance?.PlayNudgeShow();
+
         bool[] raiseValid = new bool[3];
         bool[] lowerValid = new bool[3];
 
@@ -461,8 +464,8 @@ public class NudgeController : MonoBehaviour
         // FF: Immediately kill tweens, reset scale, and disable all 6 buttons (debouncing prevents spam-tapping)
         DisableAllButtons();
 
-        // Play audio feedback
-        AudioManager.Instance?.PlayButton();
+        // FF: Play nudge tap sound
+        AudioManager.Instance?.PlayNudgeTap();
 
         // Trigger Nudge via GameManager
         if (gameManager != null)

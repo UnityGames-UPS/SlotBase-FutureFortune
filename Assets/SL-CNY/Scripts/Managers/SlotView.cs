@@ -28,7 +28,7 @@ public class SlotView : MonoBehaviour
     // Internal array built from named sprites
     private Sprite[] symbolSprites;
 
-    // Win animation sprite sequences (FF uses Spine later; CNY USpin slot kept at index 11 for legacy code)
+    // Win animation sprite sequences (fallback when a symbol has no Spine)
     private List<Sprite>[] animationSpriteArrays;
 
     [Header("Reel Containers")]
@@ -47,11 +47,6 @@ public class SlotView : MonoBehaviour
     [SerializeField] private float anticipationUpDistance = 20f;
     [SerializeField] private float anticipationUpDuration = 0.12f;
 
-    [Header("Win Animation Settings")]
-    [SerializeField] private float winPopDuration = 0.4f;
-    [SerializeField] private int winPopRepeat = 3;
-
-
     [Header("Stop Animation Settings")]
     [SerializeField] private float stopOvershootDistance = 50f;
     [SerializeField] private float stopOvershootDuration = 0.20f;
@@ -63,16 +58,33 @@ public class SlotView : MonoBehaviour
     [SerializeField] private float quickStopDuration = 0.2f;
     [SerializeField] private int minSpinCyclesBeforeStop = 3;
 
+    // FF: Turbo - all reels land together (reference: ~0.25 s spin, no stagger)
+    [Header("Turbo Stop")]
+    [SerializeField] private float turboStopStagger = 0f;
+
+    // FF: Motion blur while spinning - blurred copy of each symbol (index = symbol ID 0-10)
+    [Header("Spin Blur")]
+    [SerializeField] private bool useSpinBlur = true;
+    [SerializeField] private Sprite[] blurSymbolSprites = new Sprite[11];
+    private bool[] reelBlurring = new bool[5];
+    private Dictionary<Sprite, int> sharpSpriteToId;
+
+    // FF: Debug - logs spin start and each reel stop time
+    [SerializeField] private bool debugSpinTiming = false;
+    private float spinStartTime;
 
     [Header("Win Animation Settings")]
-    [SerializeField] private float winAnimationDuration = 3.0f; // Total duration each win symbol animation plays
     [SerializeField] private float winSymbolLoopDuration = 1.5f;
     [SerializeField] private int winSymbolLoopCount = 3;
     [Tooltip("Delay between enabling winBox overlay and starting the ImageAnimation - for sync timing")]
     [SerializeField] private float winLineBoxToAnimationDelay = 0.05f;
 
     [Header("Phase 1 Total Win Presentation")]
-    [SerializeField] private TMPro.TMP_Text phase1TotalWinText;
+    [Header("FF: Win Amount Text (one shared text, e.g. SlotObject/WinLineText)")]
+    [UnityEngine.Serialization.FormerlySerializedAs("phase1TotalWinText")]
+    [SerializeField] private TMPro.TMP_Text winAmountText;
+    [SerializeField] private float winAmountShowTime = 2f; // seconds before the text is cleared
+    private Coroutine winAmountClearRoutine;
 
     [Header("Win Box Overlays — Col 0..4  (each has 3 rows: 0=top .. 2=bottom)")]
     [SerializeField] private ColumnOverlays[] winBoxColumns = new ColumnOverlays[5];
@@ -89,6 +101,13 @@ public class SlotView : MonoBehaviour
     [Header("FF: Grid Layout Switch")]
     [SerializeField] private GameObject last2SlotCoverImage;
 
+
+    [Header("FF: Nudge Animation")]
+    [SerializeField] private float nudgeSlideDuration = 0.7f;   // time to slide one symbol
+    [SerializeField] private float nudgeSettleDuration = 0.25f; // time to settle back from the overshoot
+    [SerializeField] private float nudgeOvershoot = 8f;         // px past the target (0 = no bounce)
+    [SerializeField] private Ease nudgeSlideEase = Ease.InOutSine;
+
     // FF: Task 10 - Spine win animations
     // Folder -> ID mapping:
     // 0: D_S_Character
@@ -104,6 +123,24 @@ public class SlotView : MonoBehaviour
     // 10: Bar
     [Header("FF: Spine Win Animations")]
     [SerializeField] private SkeletonDataAsset[] symbolSkeletons = new SkeletonDataAsset[11];
+    // FF: Per-symbol Spine scaling and positioning
+    [Header("FF: Symbol Spine Scale & Offset")]
+    [SerializeField] private float[] symbolSpineScale = new float[11] {
+        0.40f, 0.40f, 0.40f, 0.40f, 0.40f, 0.40f, 0.40f, 0.40f, 0.40f, 0.40f, 0.40f
+    };
+    [SerializeField] private Vector2[] symbolSpineOffset = new Vector2[11] {
+        new Vector2(0f, 5f),   // 0: Diamond Shot
+        new Vector2(0f, -7f),  // 1: Diamond
+        new Vector2(0f, 0f),   // 2: Pilot
+        new Vector2(0f, 0f),   // 3: 777
+        new Vector2(0f, -2f),  // 4: Bonus Robot
+        new Vector2(0f, 0f),   // 5: 77
+        new Vector2(0f, 0f),   // 6: 7
+        new Vector2(0f, 0f),   // 7: Scout
+        new Vector2(0f, -7f),  // 8: Bar 5
+        new Vector2(0f, -6f),  // 9: Bar 3
+        new Vector2(0f, -3f)   // 10: Bar
+    };
     [System.Obsolete("FF: WinBox W_Frame child handles win frame presentation now.")]
     [SerializeField] private SkeletonDataAsset winFrameSkeleton;
     [SerializeField] private SpineAnimController[] cellSpines = new SpineAnimController[15]; // col * 3 + row
@@ -128,6 +165,7 @@ public class SlotView : MonoBehaviour
     internal List<List<int>> currentDisplayMatrix;
     private List<int> currentAbove;
     private List<int> currentBelow;
+    private int bonusLandCount = 0; // FF: Count of reels landing with Bonus (ID 4) so far in current spin
 
     private bool isSpinning;
 
@@ -156,7 +194,7 @@ public class SlotView : MonoBehaviour
     {
         DisableWinBoxColumns();
         DisableColumns(winAnimationColumns);
-        HidePhase1TotalWinText();
+        ClearWinAmountText();
         if (symbolInfoCard) symbolInfoCard.HideCard();
     }
 
@@ -453,6 +491,39 @@ public class SlotView : MonoBehaviour
         return id;
     }
 
+    // FF: Spin blur helpers ------------------------------------------------
+    private Sprite GetBlurSprite(int symbolId)
+    {
+        if (useSpinBlur && blurSymbolSprites != null && symbolId >= 0 && symbolId < blurSymbolSprites.Length
+            && blurSymbolSprites[symbolId] != null)
+            return blurSymbolSprites[symbolId];
+        return GetSymbolSprite(symbolId);   // missing blur -> sharp, never null
+    }
+
+    // FF: Swap every image of a reel to its blurred version (spin start)
+    private void SetReelBlur(int col)
+    {
+        if (!useSpinBlur || col < 0 || col >= reelImagesList.Count) return;
+        if (sharpSpriteToId == null)
+        {
+            sharpSpriteToId = new Dictionary<Sprite, int>();
+            if (symbolSprites == null || symbolSprites.Length == 0) BuildSymbolSpriteArray();
+            for (int i = 0; i < symbolSprites.Length; i++)
+                if (symbolSprites[i] != null && !sharpSpriteToId.ContainsKey(symbolSprites[i]))
+                    sharpSpriteToId.Add(symbolSprites[i], i);
+        }
+        var imgs = reelImagesList[col].images;
+        if (imgs == null) return;
+        foreach (var img in imgs)
+        {
+            if (img == null || img.sprite == null) continue;
+            if (sharpSpriteToId.TryGetValue(img.sprite, out int id)) img.sprite = GetBlurSprite(id);
+        }
+        if (col < reelBlurring.Length) reelBlurring[col] = true;
+    }
+
+    private bool IsTurbo => gameManager != null && gameManager.currentSpinSpeed == SpinSpeed.Turbo;
+
     private Sprite GetSymbolSprite(int symbolId)
     {
         if (symbolSprites == null || symbolSprites.Length == 0)
@@ -496,6 +567,7 @@ public class SlotView : MonoBehaviour
         if (symbolInfoCard != null) symbolInfoCard.HideCard();
 
         isSpinning = true;
+        bonusLandCount = 0; // FF: Reset bonus landing count for new spin
         KillAllTweens();
         // FF: Task 10 - Stop all Spine animations on StartSpin
         StopAllCellSpines();
@@ -507,8 +579,11 @@ public class SlotView : MonoBehaviour
             reelCycleCount[i] = 0;
         }
 
+        spinStartTime = Time.time;   // FF: debug timing
+        if (debugSpinTiming) Debug.Log("[FF SpinTiming] spin start");
         for (int col = 0; col < 5; col++)
         {
+            SetReelBlur(col);   // FF: blurred symbols while spinning
             StartReelCycleWithDelay(col, col * reelStartStagger);
         }
     }
@@ -526,15 +601,25 @@ public class SlotView : MonoBehaviour
             startSequence.AppendInterval(delay);
         }
 
-        startSequence.Append(
-            slotTransform.DOLocalMoveY(middlePosition + anticipationUpDistance, anticipationUpDuration)
-                .SetEase(Ease.OutQuad)
-        );
-
-        startSequence.Append(
-            slotTransform.DOLocalMoveY(middlePosition, anticipationUpDuration * 0.5f)
-                .SetEase(Ease.InQuad)
-        );
+        // FF: hop only if configured (reference has no hop -> anticipationUpDistance = 0)
+        if (anticipationUpDistance > 0f && anticipationUpDuration > 0f)
+        {
+            startSequence.Append(
+                slotTransform.DOLocalMoveY(middlePosition + anticipationUpDistance, anticipationUpDuration)
+                    .SetEase(Ease.OutQuad)
+            );
+            startSequence.Append(
+                slotTransform.DOLocalMoveY(middlePosition, anticipationUpDuration * 0.5f)
+                    .SetEase(Ease.InQuad)
+            );
+        }
+        else if (delay <= 0f)
+        {
+            // FF: no hop and no delay -> start cycling right away (no empty sequence)
+            startSequence.Kill();
+            if (isSpinning) StartReelCycle(columnIndex);
+            return;
+        }
 
         startSequence.OnComplete(() => {
             if (isSpinning)
@@ -606,7 +691,12 @@ public class SlotView : MonoBehaviour
         }
 
         if (reel.images.Count > 0 && reel.images[0] != null)
-            reel.images[0].sprite = GetSymbolSprite(RandomFillerSymbolId());
+        {
+            int fillerId = RandomFillerSymbolId();
+            // FF: blurred filler while this reel is still spinning
+            bool blurring = columnIndex < reelBlurring.Length && reelBlurring[columnIndex];
+            reel.images[0].sprite = blurring ? GetBlurSprite(fillerId) : GetSymbolSprite(fillerId);
+        }
     }
 
     #endregion
@@ -654,16 +744,18 @@ public class SlotView : MonoBehaviour
             yield return null;
         }
 
-        float stagger = isQuickStop ? quickStopStagger : reelStopStagger;
-
+        // FF: turbo -> all reels land together with the short quick-stop bounce
+        bool turbo = !isQuickStop && IsTurbo;
+        bool useQuickBounce = isQuickStop || turbo;
+        float stagger = isQuickStop ? quickStopStagger : (turbo ? turboStopStagger : reelStopStagger);
         for (int col = 0; col < 5; col++)
         {
             float delay = col * stagger;
-            StartCoroutine(StopSingleReel(col, resultMatrix[col], delay, isQuickStop));
+            StartCoroutine(StopSingleReel(col, resultMatrix[col], delay, useQuickBounce));
         }
 
         float longestStopTime;
-        if (isQuickStop)
+        if (useQuickBounce)
         {
             longestStopTime = (4 * stagger) + quickStopDuration;
         }
@@ -675,6 +767,8 @@ public class SlotView : MonoBehaviour
         yield return new WaitForSeconds(longestStopTime);
 
         isSpinning = false;
+        // FF: Stop reel spin loop once all reels have stopped
+        AudioManager.Instance?.StopReelSpinLoop();
 
         // FF: Task 1 - Ensure reels 3-4 top/bottom hidden when finished stopping in base game
         SetAllSideCellsVisible(false);
@@ -698,7 +792,9 @@ public class SlotView : MonoBehaviour
 
         int? aboveSym = (currentAbove != null && columnIndex < currentAbove.Count) ? (int?)currentAbove[columnIndex] : null;
         int? belowSym = (currentBelow != null && columnIndex < currentBelow.Count) ? (int?)currentBelow[columnIndex] : null;
-        SetReelSymbols(columnIndex, targetSymbols, false, aboveSym, belowSym);
+        SetReelSymbols(columnIndex, targetSymbols, false, aboveSym, belowSym);   // FF: sharp sprites from here on
+        if (columnIndex < reelBlurring.Length) reelBlurring[columnIndex] = false;
+        if (debugSpinTiming) Debug.Log($"[FF SpinTiming] reel {columnIndex} stop at {Time.time - spinStartTime:0.00}s");
 
         float currentY = slotTransform.localPosition.y;
         float targetY = middlePosition;
@@ -711,21 +807,37 @@ public class SlotView : MonoBehaviour
             0
         );
 
-        // ── Play reel-stop sound immediately when symbols lock in ──────────
-        AudioManager.Instance?.PlayReelStop();
+        // FF: Play reel-stop sound with per-clip cooldown (handles turbo 5 reels stopping together)
+        AudioManager.Instance?.PlayFFReelStop();
 
-        // Detect wild symbols in this column for hit sounds
-        if (currentDisplayMatrix != null && columnIndex < currentDisplayMatrix.Count)
+        // FF: Detect Bonus landing (Symbol ID 4)
+        // Base game = center row only (targetSymbols[1]); Free games = any visible cell (targetSymbols 0, 1, 2)
+        const int BONUS_SYMBOL_ID = 4;
+        bool isFreeSpins = gameManager != null && gameManager.isInFreeSpins;
+        bool hasBonus = false;
+        if (targetSymbols != null && targetSymbols.Count >= 3)
         {
-            bool hasWild = false;
-            int wildId = gameManager?.gameConfig != null ? gameManager.gameConfig.wildSymbolId : -1;
-            foreach (int sym in currentDisplayMatrix[columnIndex])
+            if (isFreeSpins)
             {
-                if (sym == wildId) hasWild = true;
+                for (int r = 0; r < 3 && r < targetSymbols.Count; r++)
+                {
+                    if (targetSymbols[r] == BONUS_SYMBOL_ID) { hasBonus = true; break; }
+                }
             }
-            if (hasWild) AudioManager.Instance?.PlayReelStop();
+            else
+            {
+                if (targetSymbols[1] == BONUS_SYMBOL_ID)
+                {
+                    hasBonus = true;
+                }
+            }
         }
-        // ──────────────────────────────────────────────────────────────────
+
+        if (hasBonus)
+        {
+            bonusLandCount++;
+            AudioManager.Instance?.PlayBonusLand(bonusLandCount);
+        }
 
         if (isQuickStop)
         {
@@ -800,6 +912,7 @@ public class SlotView : MonoBehaviour
 
     #region Interactive Nudge
 
+
     // FF: Task 2 - Reel nudge slide + small overshoot (~0.25s total)
     internal void AnimateReelNudge(int columnIndex, string direction, System.Action onComplete = null)
     {
@@ -817,15 +930,17 @@ public class SlotView : MonoBehaviour
         bool isLower = !string.IsNullOrEmpty(direction) && direction.ToLower().Contains("lower");
         float shift = isLower ? -symbolHeight : symbolHeight;
         float targetY = currentY + shift;
-        float overshoot = isLower ? -12f : 12f;
+        float overshoot = isLower ? -nudgeOvershoot : nudgeOvershoot;
 
+        // FF: Smooth nudge - slow start and slow end (InOutSine), small soft overshoot, gentle settle.
+        // Tune in the Inspector: SlotView > FF: Nudge Animation.
+        slotTransform.DOKill();
         Sequence nudgeSeq = DOTween.Sequence();
-        // 0.16s slide with slight overshoot + 0.09s settle = 0.25s total
-        nudgeSeq.Append(slotTransform.DOLocalMoveY(targetY + overshoot, 0.16f).SetEase(Ease.OutQuad));
-        nudgeSeq.Append(slotTransform.DOLocalMoveY(targetY, 0.09f).SetEase(Ease.InOutSine));
+        nudgeSeq.Append(slotTransform.DOLocalMoveY(targetY + overshoot, nudgeSlideDuration).SetEase(nudgeSlideEase));
+        nudgeSeq.Append(slotTransform.DOLocalMoveY(targetY, nudgeSettleDuration).SetEase(Ease.OutSine));
         nudgeSeq.OnComplete(() =>
         {
-            AudioManager.Instance?.PlayReelStop();
+            AudioManager.Instance?.PlayNudgeSlide();
             onComplete?.Invoke();
         });
     }
@@ -910,116 +1025,6 @@ public class SlotView : MonoBehaviour
                 if (currentDisplayMatrix[col][row] == actualScatterId)
                 {
                     AnimateSymbolSingleLoop(col, row, loopCount);
-                }
-            }
-        }
-    }
-
-    internal void AnimateUSpinWin(System.Action onComplete = null)
-    {
-        if (currentDisplayMatrix == null)
-        {
-            onComplete?.Invoke();
-            return;
-        }
-
-        KillWinTweens();
-        AudioManager.Instance?.PlayWinLinePhase1Start();
-
-        List<ImageAnimation> activeUSpinAnims = new List<ImageAnimation>();
-        int completedCount = 0;
-        int targetLoops = 2; // Exactly 2 loops of full animation
-
-        for (int col = 0; col < 5; col++)
-        {
-            if (col >= currentDisplayMatrix.Count) continue;
-            for (int row = 0; row < currentDisplayMatrix[col].Count; row++)
-            {
-                if (currentDisplayMatrix[col][row] == 11) // USpin Symbol ID
-                {
-                    EnableWinBox(col, row);
-                    
-                    var animGO = WinBox(winAnimationColumns, col, row);
-                    if (animGO != null)
-                    {
-                        ImageAnimation imageAnim = animGO.GetComponent<ImageAnimation>();
-                        int imageIndex = 2 + row;
-                        Image symbolImage = (col < reelImagesList.Count && reelImagesList[col].images != null && imageIndex < reelImagesList[col].images.Count)
-                            ? reelImagesList[col].images[imageIndex]
-                            : null;
-
-                        if (imageAnim != null)
-                        {
-                            activeUSpinAnims.Add(imageAnim);
-
-                            List<Sprite> animSprites = animationSpriteArrays[11];
-                            imageAnim.textureArray = animSprites;
-                            imageAnim.doLoopAnimation = true;
-
-                            animGO.SetActive(true);
-                            Image animRenderer = imageAnim.rendererDelegate != null ? imageAnim.rendererDelegate : animGO.GetComponent<Image>();
-                            if (animRenderer != null)
-                            {
-                                animRenderer.DOKill();
-                                Color c = animRenderer.color;
-                                animRenderer.color = new Color(c.r, c.g, c.b, 1f);
-                            }
-                            if (symbolImage != null)
-                            {
-                                symbolImage.DOKill();
-                                symbolImage.DOFade(0f, 0.2f);
-                            }
-
-                            imageAnim.onLoopComplete = (loopCount) =>
-                            {
-                                if (loopCount >= targetLoops)
-                                {
-                                    imageAnim.onLoopComplete = null;
-                                    imageAnim.StopAnimation();
-                                    animGO.SetActive(false);
-
-                                    if (symbolImage != null)
-                                    {
-                                        symbolImage.DOKill();
-                                        symbolImage.DOFade(1f, 0.2f);
-                                    }
-
-                                    completedCount++;
-                                    if (completedCount >= activeUSpinAnims.Count)
-                                    {
-                                        onComplete?.Invoke();
-                                    }
-                                }
-                            };
-
-                            imageAnim.StartAnimation();
-                        }
-                    }
-                }
-            }
-        }
-
-        if (activeUSpinAnims.Count == 0)
-        {
-            onComplete?.Invoke();
-        }
-    }
-
-    internal void AnimateMoneyBagWin()
-    {
-        if (currentDisplayMatrix == null) return;
-
-        KillWinTweens();
-        AudioManager.Instance?.PlayWinLinePhase1Start();
-
-        for (int col = 0; col < 5; col++)
-        {
-            if (col >= currentDisplayMatrix.Count) continue;
-            for (int row = 0; row < currentDisplayMatrix[col].Count; row++)
-            {
-                if (currentDisplayMatrix[col][row] == 12) // MoneyBag Symbol ID
-                {
-                    EnableWinBox(col, row);
                 }
             }
         }
@@ -1144,39 +1149,55 @@ public class SlotView : MonoBehaviour
             totalWinAmount = gameManager.lastResult.winAmount;
         }
 
-        // Show Phase 1 Total Win Text with final win value
-        ShowPhase1TotalWin(totalWinAmount);
+        // FF: No middle "total win" text - the bottom WIN box shows the total; only per-line amounts on cells
+        ClearWinAmountText();
 
         // FF: Task 2A - Show win amount text on the last winning cell of each winning line in Phase 1
         foreach (var winLine in winLines)
         {
             if (winLine.positions != null && winLine.positions.Count > 0)
             {
-                int lastFlatIndex = winLine.positions[winLine.positions.Count - 1];
+                int lastFlatIndex = GetWinTextCell(winLine);
                 int lastRow = lastFlatIndex / 5;
                 int lastCol = lastFlatIndex % 5;
                 ShowWinLineTextOnIcon(lastCol, lastRow, winLine.winAmount);
             }
         }
 
-        AudioManager.Instance?.PlayWinLinePhase1Start();
+        // FF: Win presentation sound: big win vs small win based on GameManager threshold
+        bool isBigWin = false;
+        if (gameManager != null && gameManager.lastResult != null)
+        {
+            double totalPay = gameManager.GetTotalPay();
+            double mult = totalPay > 0 ? (gameManager.lastResult.winAmount / totalPay) : 0;
+            if (mult >= gameManager.BigWinMultiplierThreshold)
+            {
+                isBigWin = true;
+            }
+        }
+
+        if (isBigWin)
+        {
+            AudioManager.Instance?.PlayWinBig();
+        }
+        else
+        {
+            AudioManager.Instance?.PlayWinSmall();
+        }
 
         // Animate all winning symbols and wait for their ImageAnimation loops to complete
         yield return StartCoroutine(AnimateWinPositions(allWinPositions));
 
         KillWinTweens(false);
         HideAllWinLineTexts();
-        HidePhase1TotalWinText();
+        ClearWinAmountText();
 
         // Invoke onComplete immediately after Phase 1 so game logic (Free Spins / Autoplay / Win complete) can proceed
         onComplete?.Invoke();
 
-        // Skip Phase 2 if in Free Spins, Autoplay, or if a Special Feature (USpin, MoneyBag, Scatter trigger) was triggered
-        bool hasSpecialFeature = (gameManager != null && gameManager.lastResult != null && (
-            (gameManager.lastResult.uSpinData != null && gameManager.lastResult.uSpinData.triggered) ||
-            (gameManager.lastResult.moneyBagData != null && gameManager.lastResult.moneyBagData.triggered) ||
-            (gameManager.lastResult.freeSpinData != null && gameManager.lastResult.freeSpinData.isTriggered)
-        ));
+        // Skip Phase 2 if in Free Spins, Autoplay, or if the free-games trigger was hit
+        bool hasSpecialFeature = gameManager != null && gameManager.lastResult != null
+            && gameManager.lastResult.freeSpinData != null && gameManager.lastResult.freeSpinData.isTriggered;
 
         bool skipPhase2 = (gameManager != null && (gameManager.isInFreeSpins || gameManager.isAutoPlaying)) || hasSpecialFeature;
         if (skipPhase2)
@@ -1197,7 +1218,7 @@ public class SlotView : MonoBehaviour
                 HideAllWinLineTexts();
 
                 // FF: Task 2A - Show WinLineText on the last icon of the active win line (single or multiple lines)
-                int lastFlatIndex = winLine.positions[winLine.positions.Count - 1];
+                int lastFlatIndex = GetWinTextCell(winLine);
                 int lastRow = lastFlatIndex / 5;
                 int lastCol = lastFlatIndex % 5;
                 ShowWinLineTextOnIcon(lastCol, lastRow, winLine.winAmount);
@@ -1278,6 +1299,21 @@ public class SlotView : MonoBehaviour
                 anySpineActive = true;
                 var spineCtrl = cellSpines[cellIndex];
                 spineCtrl.SetSkeletonData(symbolSkeletons[symbolId]);
+
+                // FF: Apply per-symbol scale and offset (fallback 0.446 if scale is 0)
+                float spineScale = (symbolSpineScale != null && symbolId >= 0 && symbolId < symbolSpineScale.Length && symbolSpineScale[symbolId] > 0f)
+                    ? symbolSpineScale[symbolId]
+                    : 0.446f;
+                Vector2 spineOffset = (symbolSpineOffset != null && symbolId >= 0 && symbolId < symbolSpineOffset.Length)
+                    ? symbolSpineOffset[symbolId]
+                    : Vector2.zero;
+
+                RectTransform spineRt = spineCtrl.GetComponent<RectTransform>();
+                if (spineRt != null)
+                {
+                    spineRt.localScale = new Vector3(spineScale, spineScale, 1f);
+                    spineRt.anchoredPosition = spineOffset;
+                }
 
                 // FF: Task 4 - Record longest Spine duration among active cells
                 float spineDur = spineCtrl.GetAnimationDuration();
@@ -1399,8 +1435,11 @@ public class SlotView : MonoBehaviour
         }
     }
 
+    // FF: ONE shared win-amount text (SlotView > winAmountText) is moved onto the winning cell, filled with
+    // sprite digits, and cleared after winAmountShowTime. No SetActive - the object always stays active.
     private void ShowWinLineTextOnIcon(int col, int row, double winAmount)
     {
+        if (winAmountText == null) return;
         if (col < 0 || col >= reelImagesList.Count) return;
         var reel = reelImagesList[col];
         if (reel.images == null) return;
@@ -1410,60 +1449,97 @@ public class SlotView : MonoBehaviour
         Image symbolImage = reel.images[imageIndex];
         if (symbolImage == null) return;
 
-        Transform textTransform = symbolImage.transform.Find("WinLineText");
-        if (textTransform != null)
+        if (winAmountClearRoutine != null) StopCoroutine(winAmountClearRoutine);
+
+        Transform textTransform = winAmountText.transform;
+        textTransform.position = symbolImage.rectTransform.TransformPoint(symbolImage.rectTransform.rect.center);
+        winAmountText.text = ToSpriteDigits(winAmount.ToString("0.00"));
+
+        // Small pop (own tween, not in winTweens, so killing win tweens never leaves it at scale 0)
+        textTransform.DOKill();
+        textTransform.localScale = Vector3.zero;
+        DOTween.Sequence()
+            .Append(textTransform.DOScale(1.2f, 0.15f).SetEase(Ease.OutQuad))
+            .Append(textTransform.DOScale(1f, 0.10f).SetEase(Ease.InQuad))
+            .SetTarget(textTransform);
+
+        winAmountClearRoutine = StartCoroutine(ClearWinAmountTextAfter(winAmountShowTime));
+    }
+
+    // FF: "0.30" -> sprite tags by INDEX in the WinlineTextNumbers sprite asset: index d shows digit d,
+    // index 10 shows '.'. (The sprite NAMES are off by one - e.g. "Numbers_0" shows 1 - so don't use names.)
+    private static string ToSpriteDigits(string value)
+    {
+        var sb = new System.Text.StringBuilder(value.Length * 24);
+        foreach (char c in value)
         {
-            var tmpText = textTransform.GetComponent<TMPro.TMP_Text>();
-            if (tmpText != null)
-            {
-                // FF: Format as 0.00
-                tmpText.text = winAmount.ToString("0.00");
-            }
-            AnimateTextScaleAppear(textTransform);
+            if (c >= '0' && c <= '9') sb.Append("<sprite=").Append(c - '0').Append('>');
+            else if (c == '.' || c == ',') sb.Append("<sprite=10>");
+            else sb.Append(c);
         }
+        return sb.ToString();
     }
 
     private void HideAllWinLineTexts()
     {
-        if (reelImagesList == null) return;
-        foreach (var reel in reelImagesList)
+        ClearWinAmountText();
+    }
+
+    // FF: Cell that gets the win amount: the winning cell on reel 3 (col 2) so the number stays out of the
+    // nudge box. Lines always include col 2 (they start at col 0, min 3 of a kind). Scatter (positions in any
+    // order): rightmost Bonus on cols 0-2; only if none there, the rightmost visible one on cols 3-4.
+    private const int WinTextMaxCol = 2;
+
+    private int GetWinTextCell(WinLine winLine)
+    {
+        int fallback = winLine.positions[winLine.positions.Count - 1];
+        bool isBaseGame = gameManager == null || !gameManager.isInFreeSpins;
+        int best = -1;
+        int bestOver = -1;
+        foreach (int flat in winLine.positions)
         {
-            if (reel.images != null)
+            int row = flat / 5;
+            int col = flat % 5;
+            if (isBaseGame && col >= 3 && row != 1) continue; // hidden cells in base game
+            if (col <= WinTextMaxCol)
             {
-                foreach (var image in reel.images)
-                {
-                    if (image != null)
-                    {
-                        Transform textTransform = image.transform.Find("WinLineText");
-                        if (textTransform != null)
-                        {
-                            textTransform.DOKill();
-                            textTransform.localScale = Vector3.one;
-                            textTransform.gameObject.SetActive(false);
-                        }
-                    }
-                }
+                if (best < 0 || IsRightOf(flat, best)) best = flat;
+            }
+            else if (bestOver < 0 || IsRightOf(flat, bestOver))
+            {
+                bestOver = flat;
             }
         }
+        if (best >= 0) return best;
+        return bestOver >= 0 ? bestOver : fallback;
     }
 
-    private void ShowPhase1TotalWin(double totalWinAmount)
+    // FF: true if cell a is further right than b (same column: higher row wins = top)
+    private static bool IsRightOf(int a, int b)
     {
-        if (phase1TotalWinText != null)
-        {
-            phase1TotalWinText.text = totalWinAmount.ToString("0.###");
-            AnimateTextScaleAppear(phase1TotalWinText.transform);
-        }
+        int aCol = a % 5, bCol = b % 5;
+        return aCol > bCol || (aCol == bCol && a / 5 < b / 5);
     }
 
-    private void HidePhase1TotalWinText()
+    // FF: Clear the shared amount text (object stays active; only the text is emptied)
+    private void ClearWinAmountText()
     {
-        if (phase1TotalWinText != null)
+        if (winAmountClearRoutine != null)
         {
-            phase1TotalWinText.transform.DOKill();
-            phase1TotalWinText.transform.localScale = Vector3.one;
-            phase1TotalWinText.gameObject.SetActive(false);
+            StopCoroutine(winAmountClearRoutine);
+            winAmountClearRoutine = null;
         }
+        if (winAmountText == null) return;
+        winAmountText.transform.DOKill();
+        winAmountText.transform.localScale = Vector3.one;
+        winAmountText.text = string.Empty;
+    }
+
+    private IEnumerator ClearWinAmountTextAfter(float seconds)
+    {
+        yield return new WaitForSeconds(seconds);
+        winAmountClearRoutine = null;
+        if (winAmountText != null) winAmountText.text = string.Empty;
     }
 
     private void AnimateTextScaleAppear(Transform textTransform, float popScale = 1.2f, float durationUp = 0.15f, float durationDown = 0.10f)
@@ -1769,7 +1845,7 @@ public class SlotView : MonoBehaviour
 
         DisableWinBoxColumns();
         HideAllWinLineTexts();
-        HidePhase1TotalWinText();
+        ClearWinAmountText();
 
         // Restore all symbol image alphas to full opacity
         foreach (var reel in reelImagesList)
@@ -1822,11 +1898,74 @@ public class SlotView : MonoBehaviour
         KillWinTweens();
     }
 
+    // FF: Task 3 - Reset spin visuals on mid-spin disconnect or failure
+    internal void ResetSpinVisuals()
+    {
+        for (int col = 0; col < reelBlurring.Length; col++)
+        {
+            reelBlurring[col] = false;
+        }
+
+        if (currentDisplayMatrix != null)
+        {
+            for (int col = 0; col < currentDisplayMatrix.Count; col++)
+            {
+                if (col < reelTransforms.Length && currentDisplayMatrix[col] != null)
+                {
+                    int? aboveSym = (currentAbove != null && col < currentAbove.Count) ? (int?)currentAbove[col] : null;
+                    int? belowSym = (currentBelow != null && col < currentBelow.Count) ? (int?)currentBelow[col] : null;
+                    SetReelSymbols(col, currentDisplayMatrix[col], false, aboveSym, belowSym);
+                }
+            }
+        }
+
+        if (reelTransforms != null)
+        {
+            for (int col = 0; col < reelTransforms.Length; col++)
+            {
+                if (reelTransforms[col] != null)
+                {
+                    reelTransforms[col].DOKill();
+                    Vector3 pos = reelTransforms[col].localPosition;
+                    reelTransforms[col].localPosition = new Vector3(pos.x, middlePosition, pos.z);
+                }
+            }
+        }
+
+        foreach (var tween in spinTweens)
+        {
+            tween?.Kill();
+        }
+        spinTweens.Clear();
+
+        isSpinning = false;
+        SetAllSideCellsVisible(false);
+    }
+
     #region FF: Grid Layout Switch
 
-    // FF: Task 6 - Grid layout switch
+    // FF: Task 6 - Grid layout switch with CanvasGroup fading
+    // FF: The nudge box ("nugget place") holds reels 3-4 and has a Mask + frame Image
+    // that clip them to the single center row in the base game. Free games need it off (full 5x3).
+    private UnityEngine.UI.Mask nudgeBoxMask;
+    private UnityEngine.UI.Image nudgeBoxImage;
+
+    private void SetNudgeBoxMask(bool baseGame)
+    {
+        if (nudgeBoxMask == null && reelImagesList != null && reelImagesList.Count > 3
+            && reelImagesList[3] != null && reelImagesList[3].images != null && reelImagesList[3].images.Count > 0
+            && reelImagesList[3].images[0] != null)
+        {
+            nudgeBoxMask = reelImagesList[3].images[0].GetComponentInParent<UnityEngine.UI.Mask>(true);
+            if (nudgeBoxMask != null) nudgeBoxImage = nudgeBoxMask.GetComponent<UnityEngine.UI.Image>();
+        }
+        if (nudgeBoxMask != null) nudgeBoxMask.enabled = baseGame;
+        if (nudgeBoxImage != null) nudgeBoxImage.enabled = baseGame;
+    }
+
     internal void SetFreeGameLayout(bool full)
     {
+        SetNudgeBoxMask(!full);
         if (last2SlotCoverImage == null) return;
 
         // full == true: Free Games (5x3 fully open, hide cover image)
@@ -1834,29 +1973,46 @@ public class SlotView : MonoBehaviour
         bool showCover = !full;
 
         CanvasGroup cg = last2SlotCoverImage.GetComponent<CanvasGroup>();
-        if (cg != null)
+        if (cg == null)
         {
-            if (showCover)
+            cg = last2SlotCoverImage.AddComponent<CanvasGroup>();
+        }
+
+        cg.DOKill();
+        if (showCover)
+        {
+            last2SlotCoverImage.SetActive(true);
+            cg.blocksRaycasts = true;
+            cg.interactable = true;
+            if (!Application.isPlaying)
             {
-                last2SlotCoverImage.SetActive(true);
-                cg.DOKill();
-                cg.DOFade(1f, 0.3f);
+                cg.alpha = 1f;
             }
             else
             {
-                cg.DOKill();
-                cg.DOFade(0f, 0.3f).OnComplete(() =>
-                {
-                    if (last2SlotCoverImage != null)
-                    {
-                        last2SlotCoverImage.SetActive(false);
-                    }
-                });
+                cg.DOFade(1f, 0.3f);
             }
         }
         else
         {
-            last2SlotCoverImage.SetActive(showCover);
+            cg.blocksRaycasts = false;
+            cg.interactable = false;
+            if (!Application.isPlaying)
+            {
+                cg.alpha = 0f;
+            }
+            else
+            {
+                cg.DOFade(0f, 0.3f).OnComplete(() =>
+                {
+                    if (cg != null)
+                    {
+                        cg.alpha = 0f;
+                        cg.blocksRaycasts = false;
+                        cg.interactable = false;
+                    }
+                });
+            }
         }
     }
 
@@ -1870,6 +2026,150 @@ public class SlotView : MonoBehaviour
     }
 
     #endregion
+
+    // FF: serialized field kept outside #if so player builds have the same field layout
+    [Header("FF: Editor Preview")]
+    [Tooltip("Symbol ID (0-10) to preview in cell (col 2, row 1)")]
+    [Range(0, 10)]
+    [SerializeField] private int previewSymbolId = 0;
+
+#if UNITY_EDITOR
+    #region FF: Editor Spine Preview
+
+    [ContextMenu("FF: Preview Symbol Spine")]
+    private void PreviewSymbolSpine()
+    {
+        int col = 2;
+        int row = 1;
+        int cellIndex = col * 3 + row; // Cell (2,1) = index 7
+
+        if (cellSpines == null || cellIndex >= cellSpines.Length || cellSpines[cellIndex] == null)
+        {
+            Debug.LogError($"[SlotView] CellSpine at cell ({col},{row}) is null!");
+            return;
+        }
+
+        int symId = Mathf.Clamp(previewSymbolId, 0, 10);
+        if (symbolSkeletons == null || symId >= symbolSkeletons.Length || symbolSkeletons[symId] == null)
+        {
+            Debug.LogError($"[SlotView] symbolSkeletons[{symId}] is null!");
+            return;
+        }
+
+        // Show static symbol in cell (2, 1) with semi-transparency so both Spine and static sprite are visible
+        if (reelImagesList != null && col < reelImagesList.Count && reelImagesList[col]?.images != null)
+        {
+            int imageIndex = 2 + row;
+            if (imageIndex < reelImagesList[col].images.Count)
+            {
+                var staticImg = reelImagesList[col].images[imageIndex];
+                if (staticImg != null)
+                {
+                    staticImg.sprite = GetSymbolSprite(symId);
+                    Color c = staticImg.color;
+                    c.a = 0.5f;
+                    staticImg.color = c;
+                    staticImg.gameObject.SetActive(true);
+                }
+            }
+        }
+
+        // Setup Spine in cell (2, 1)
+        var spineCtrl = cellSpines[cellIndex];
+        spineCtrl.SetSkeletonData(symbolSkeletons[symId]);
+
+        float spineScale = (symbolSpineScale != null && symId < symbolSpineScale.Length && symbolSpineScale[symId] > 0f)
+            ? symbolSpineScale[symId]
+            : 0.446f;
+        Vector2 spineOffset = (symbolSpineOffset != null && symId < symbolSpineOffset.Length)
+            ? symbolSpineOffset[symId]
+            : Vector2.zero;
+
+        RectTransform spineRt = spineCtrl.GetComponent<RectTransform>();
+        if (spineRt != null)
+        {
+            spineRt.localScale = new Vector3(spineScale, spineScale, 1f);
+            spineRt.anchoredPosition = spineOffset;
+        }
+
+        spineCtrl.gameObject.SetActive(true);
+
+        if (Application.isPlaying)
+        {
+            spineCtrl.Play(true);
+        }
+        else if (spineCtrl.SkeletonGraphic != null)
+        {
+            spineCtrl.SkeletonGraphic.Initialize(true);
+            spineCtrl.SkeletonGraphic.Update(0f);
+            spineCtrl.SkeletonGraphic.Rebuild(UnityEngine.UI.CanvasUpdate.PreRender);
+        }
+
+        Debug.Log($"<color=green>[SlotView] Previewing Symbol {symId} Spine in cell ({col},{row}): scale={spineScale:F3}, offset={spineOffset}</color>");
+        UnityEditor.EditorUtility.SetDirty(this);
+    }
+
+    [ContextMenu("FF: Reset Preview Symbol Spine")]
+    private void ResetPreviewSymbolSpine()
+    {
+        int col = 2;
+        int row = 1;
+        int cellIndex = col * 3 + row;
+
+        if (cellSpines != null && cellIndex < cellSpines.Length && cellSpines[cellIndex] != null)
+        {
+            cellSpines[cellIndex].Stop();
+            cellSpines[cellIndex].gameObject.SetActive(false);
+        }
+
+        if (reelImagesList != null && col < reelImagesList.Count && reelImagesList[col]?.images != null)
+        {
+            int imageIndex = 2 + row;
+            if (imageIndex < reelImagesList[col].images.Count)
+            {
+                var staticImg = reelImagesList[col].images[imageIndex];
+                if (staticImg != null)
+                {
+                    Color c = staticImg.color;
+                    c.a = 1f;
+                    staticImg.color = c;
+                    if (currentDisplayMatrix != null && col < currentDisplayMatrix.Count && row < currentDisplayMatrix[col].Count)
+                    {
+                        staticImg.sprite = GetSymbolSprite(currentDisplayMatrix[col][row]);
+                    }
+                }
+            }
+        }
+
+        Debug.Log("[SlotView] Preview reset for cell (2,1).");
+        UnityEditor.EditorUtility.SetDirty(this);
+    }
+
+    private void OnValidate()
+    {
+        // Live update preview in editor if cell (2,1) spine is currently active
+        int cellIndex = 2 * 3 + 1;
+        if (cellSpines != null && cellIndex < cellSpines.Length && cellSpines[cellIndex] != null && cellSpines[cellIndex].gameObject.activeSelf)
+        {
+            int symId = Mathf.Clamp(previewSymbolId, 0, 10);
+            float spineScale = (symbolSpineScale != null && symId < symbolSpineScale.Length && symbolSpineScale[symId] > 0f)
+                ? symbolSpineScale[symId]
+                : 0.446f;
+            Vector2 spineOffset = (symbolSpineOffset != null && symId < symbolSpineOffset.Length)
+                ? symbolSpineOffset[symId]
+                : Vector2.zero;
+
+            RectTransform spineRt = cellSpines[cellIndex].GetComponent<RectTransform>();
+            if (spineRt != null)
+            {
+                spineRt.localScale = new Vector3(spineScale, spineScale, 1f);
+                spineRt.anchoredPosition = spineOffset;
+            }
+        }
+    }
+
+    #endregion
+#endif
 }
 
 [System.Serializable]

@@ -10,13 +10,17 @@ public class GameManager : MonoBehaviour
     [SerializeField] internal PopupManager popupManager;
     [SerializeField] internal SlotView slotView;
     public SlotView SlotView => slotView;
-    [SerializeField] internal WheelSpinController wheelController;
     [SerializeField] internal NudgeController nudgeController;
 
     [Header("Spin Settings")]
     [SerializeField] private float normalSpinDuration = 3.5f;
     [SerializeField] private float turboSpinDuration = 2.0f;
     [SerializeField] private float quickSpinCycleDuration = 0.8f;
+
+    // FF: autoplay nudge delay by speed (reference: ~1.5 s normal, ~0.7 s turbo)
+    [Header("Autoplay Nudge Delay")]
+    [SerializeField] private float autoNudgeDelayNormal = 1.5f;
+    [SerializeField] private float autoNudgeDelayTurbo = 0.7f;
 
     [Header("Win Settings")]
     [SerializeField] private double bigWinMultiplierThreshold = 500.0;
@@ -89,11 +93,6 @@ public class GameManager : MonoBehaviour
         if (initialMatrix != null && slotView != null)
         {
             slotView.SetInitialMatrix(initialMatrix);
-        }
-
-        if (wheelController != null && gameConfig.uSpinSegments != null)
-        {
-            wheelController.OverrideSegmentsWithData(gameConfig.uSpinSegments);
         }
 
         // FF: Task 7 - Resume after refresh (initData.state)
@@ -339,6 +338,10 @@ public class GameManager : MonoBehaviour
         if (lastResult != null)
         {
             ProcessSpinResult();
+
+            // FF: SPIN pressed during the win of a free-games trigger spin: processing the result just
+            // opened the award popup. Do not start a base spin under it - free spins start from the popup.
+            if (waitingForFreeSpinStart) return;
         }
 
         lastResult = null;
@@ -351,6 +354,11 @@ public class GameManager : MonoBehaviour
             playerData.balance -= GetTotalPay();
             if (playerData.balance < 0) playerData.balance = 0;
         }
+
+        // FF: Stop previous spin loops, play spin start SFX, and begin reel spin loop
+        AudioManager.Instance?.StopAllLoops();
+        AudioManager.Instance?.PlayFFSpinStart();
+        AudioManager.Instance?.StartReelSpinLoop();
 
         uiManager.OnSpinStarted();
 
@@ -416,6 +424,9 @@ public class GameManager : MonoBehaviour
 
     private void OnReelsStoppedComplete()
     {
+        // FF: Stop reel spin loop when reels are fully stopped
+        AudioManager.Instance?.StopReelSpinLoop();
+
         if (lastResult != null)
         {
             double featureDeferredWin = lastResult.GetTotalFeatureDeferredWins();
@@ -577,18 +588,6 @@ public class GameManager : MonoBehaviour
             yield return new WaitUntil(() => retriggerDone);
         }
 
-        if (lastResult != null && lastResult.uSpinData != null && lastResult.uSpinData.triggered)
-        {
-            yield return StartCoroutine(DelayUSpinTriggerResult());
-            yield break;
-        }
-
-        if (lastResult != null && lastResult.moneyBagData != null && lastResult.moneyBagData.triggered)
-        {
-            yield return StartCoroutine(DelayMoneyBagTriggerResult());
-            yield break;
-        }
-
         if (lastResult != null && lastResult.freeSpinData != null && lastResult.freeSpinData.isTriggered && !isInFreeSpins)
         {
             yield return StartCoroutine(DelayScatterTriggerResult());
@@ -612,8 +611,13 @@ public class GameManager : MonoBehaviour
 
     private IEnumerator DelayScatterTriggerResult()
     {
-        // Play special feature trigger sound AFTER all reels have stopped
-        AudioManager.Instance?.Play3UspinWinLineLoop();
+        // FF: Block SPIN during the trigger celebration. Without this the state is Idle here, a SPIN
+        // press runs StartSpin -> ProcessSpinResult early and a spin starts under the award popup.
+        waitingForFreeSpinStart = true;
+        uiManager.DisableControlsDuringWinAnimation();
+
+        // FF: Play Free Games trigger sound
+        AudioManager.Instance?.PlayFreeGamesTrigger();
 
         // Start scatter animations together AFTER all reels have stopped
         // Using 4 loops to match the 6-second delay (4 * 1.5s = 6s)
@@ -622,51 +626,6 @@ public class GameManager : MonoBehaviour
         // Wait for scatter hit animations to play
         yield return new WaitForSeconds(3.5f);
         ProcessSpinResult();
-    }
-
-    private IEnumerator DelayUSpinTriggerResult()
-    {
-        AudioManager.Instance?.Play3UspinWinLineLoop();
-
-        bool animFinished = false;
-        if (slotView != null)
-        {
-            slotView.AnimateUSpinWin(() =>
-            {
-                animFinished = true;
-            });
-        }
-        else
-        {
-            animFinished = true;
-        }
-
-        yield return new WaitUntil(() => animFinished);
-
-        uiManager.TriggerUSpinBonus(lastResult.uSpinData, () =>
-        {
-            AudioManager.Instance?.Stop3UspinWinLineLoop();
-            lastResult.uSpinData.triggered = false;
-            ResumeAfterSpecialFeature();
-        });
-    }
-
-    private IEnumerator DelayMoneyBagTriggerResult()
-    {
-        AudioManager.Instance?.Play3UspinWinLineLoop();
-
-        if (slotView != null)
-        {
-            slotView.AnimateMoneyBagWin();
-        }
-
-        yield return new WaitForSeconds(3.5f);
-
-        uiManager.TriggerMoneyBagBonus(lastResult.moneyBagData, () =>
-        {
-            lastResult.moneyBagData.triggered = false;
-            ResumeAfterSpecialFeature();
-        });
     }
 
     private IEnumerator DelayBeforeNextRound()
@@ -706,14 +665,6 @@ public class GameManager : MonoBehaviour
             {
                 freeSpinsRemaining = remaining;
                 freeSpinsUsed = result.serverSpinsUsed;
-                int displayTotalSpins = result.serverTotalSpins;
-
-                if (result.uSpinData != null && result.uSpinData.triggered && result.uSpinData.freeGamesAwarded > 0)
-                {
-                    displayTotalSpins -= result.uSpinData.freeGamesAwarded;
-                    freeSpinsRemaining -= result.uSpinData.freeGamesAwarded;
-                }
-
                 uiManager.UpdateFreeSpinRemainingCount(freeSpinsRemaining);
             }
         }
@@ -860,7 +811,9 @@ public class GameManager : MonoBehaviour
     private IEnumerator AutoNudgeRoutine()
     {
         float timer = 0f;
-        while (timer < 0.7f)
+        // FF: delay depends on spin speed
+        float nudgeDelay = (currentSpinSpeed == SpinSpeed.Normal) ? autoNudgeDelayNormal : autoNudgeDelayTurbo;
+        while (timer < nudgeDelay)
         {
             // If player stopped autoplay during this wait, cancel and leave waiting for manual tap
             if (!isAutoPlaying || currentState != GameState.AwaitingNudge)
@@ -919,6 +872,9 @@ public class GameManager : MonoBehaviour
             slotView.ResetReelPosition(nudgedReelIndex);
         }
 
+        // FF: Task 3 - Reset spin visuals on nudge failure
+        slotView?.ResetSpinVisuals();
+
         if (nudgeController != null)
         {
             nudgeController.DisableAllButtons();
@@ -944,6 +900,12 @@ public class GameManager : MonoBehaviour
 
     private void ProcessSpinResult()
     {
+        // FF: guard - result can already be consumed (e.g. by StartSpin) when a delayed coroutine lands here
+        if (lastResult == null)
+        {
+            Debug.LogWarning("[FF] ProcessSpinResult called with no pending result - skipped");
+            return;
+        }
         playerData = lastResult.playerData;
 
         uiManager.OnSpinCompleted(lastResult);
@@ -1188,6 +1150,9 @@ public class GameManager : MonoBehaviour
 
     internal void OnDisconnected()
     {
+        // FF: Stop all active sound loops on disconnect
+        AudioManager.Instance?.StopAllLoops();
+
         if (spinCoroutine != null)
         {
             StopCoroutine(spinCoroutine);
@@ -1232,6 +1197,8 @@ public class GameManager : MonoBehaviour
         if (slotView != null)
         {
             slotView.StopAllWinAnimations();
+            // FF: Task 3 - Reset spin visuals on disconnect
+            slotView.ResetSpinVisuals();
         }
 
         currentState = GameState.Idle;
