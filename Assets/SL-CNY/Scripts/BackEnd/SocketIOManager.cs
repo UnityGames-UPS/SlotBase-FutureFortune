@@ -349,9 +349,11 @@ public class SocketIOManager : MonoBehaviour
       gameManager.OnInitDataReceived(gameConfig, playerData, initialMatrix);
       gameManager.OnInitDataReceived(gameConfig, playerData, initialMatrix, initData.state);
 
-      if (initData.jackpotData != null && initData.jackpotData.values != null && uiManager != null)
+      // FF: jackpot values from the server, or $0.00 when none are sent
+      if (uiManager != null)
       {
-        uiManager.UpdateJackpotDisplay(initData.jackpotData.values);
+        bool hasJackpot = initData.jackpotData != null && initData.jackpotData.values != null;
+        uiManager.UpdateJackpotDisplay(hasJackpot ? initData.jackpotData.values : new JackpotValues());
       }
 
       if (RaycastBlocker) RaycastBlocker.SetActive(false);

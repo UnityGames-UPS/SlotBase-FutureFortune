@@ -178,6 +178,7 @@ public class UIManager : MonoBehaviour
 
     [Header("Game Rules Dynamic Texts")]
     [SerializeField] private TMP_Text totalLineCountText;
+    [SerializeField] private TMP_Text totalLineCountTextPortrait; // FF: portrait bottom bar (LIneCountTxt (1))
     [SerializeField] private TMP_Text ruleSymbol0Text;
     [SerializeField] private TMP_Text ruleSymbol1Text;
     [SerializeField] private TMP_Text ruleSymbol2Text;
@@ -225,6 +226,11 @@ public class UIManager : MonoBehaviour
 
     private Tween balanceTween;
     private Tween winTween;
+    [SerializeField] private float bottomWinCountUpDuration = 0.8f;     // FF: bottom WinDisplay count-up time
+    private double pendingBottomWin = -1; // FF: win held while a win popup is open (-1 = none)
+    private double winTweenTarget = -1;
+    private double autoPlayWinTotal = 0;      // FF: sum of all wins in the current autospin session
+    private bool autoPlayEndPending = false;  // FF: autospin stopped mid-spin - show the total when that spin completes
     private WinPopupType currentUniversalWinPopupType; // FF: Track current open universal win popup type
     private int totalFreeSpinsAwarded = 0;
 
@@ -313,12 +319,15 @@ public class UIManager : MonoBehaviour
         // FF: Hide all three panels at init
         if (freeGamesAwardPopup) freeGamesAwardPopup.SetActive(false);
         if (bigWinPopup) bigWinPopup.SetActive(false);
+        SetPopupDim(false, true);
+        SetButtonActive(uwpTakeButton, uwpTakeButtonPortrait, false); // FF: TAKE only while a win popup is open; SPIN shows at start
         currentPopupGO = null;
         currentPopupRect = null;
 
         if (freeSpinCountContainer) freeSpinCountContainer.SetActive(false);
         if (transitionBackFilm) transitionBackFilm.gameObject.SetActive(false);
         UpdatePingDisplay("-- ms");
+        UpdateJackpotDisplay(new JackpotValues()); // FF: show $0.00 until the server sends jackpot values
     }
 
     #region Loading & Intro Sequence
@@ -564,7 +573,7 @@ public class UIManager : MonoBehaviour
         currentWinDisplayValue = 0;
         UpdateBetDisplay();
         UpdateBalanceDisplay();
-        UpdateWinDisplay(0);
+        ResetWinDisplay();
     }
 
     internal void OnSpinStarted()
@@ -580,7 +589,7 @@ public class UIManager : MonoBehaviour
             SetSpinStopButtonStates(isSpinningState: true, isInteractable: true);
             SetBetControlsEnabled(false);
             SetButtonInteractable(settingsOpenButton, settingsOpenButtonPortrait, true);
-            UpdateWinDisplay(0);
+            ResetWinDisplay();
         }
 
         UpdateBalanceDisplay();
@@ -613,7 +622,7 @@ public class UIManager : MonoBehaviour
             double displayWin = (gameManager != null && gameManager.isInFreeSpins)
                 ? (result.totalFreeSpinsWin > 0 ? result.totalFreeSpinsWin : result.serverTotalRoundWin)
                 : result.winAmount;
-            UpdateWinDisplay(displayWin);
+            ShowBottomWin(displayWin);
         }
     }
 
@@ -625,7 +634,14 @@ public class UIManager : MonoBehaviour
             double displayWin = (gameManager != null && gameManager.isInFreeSpins)
                 ? (result.totalFreeSpinsWin > 0 ? result.totalFreeSpinsWin : result.serverTotalRoundWin)
                 : result.winAmount;
-            UpdateWinDisplay(displayWin);
+
+            // FF: Autospin - add up every spin's win, show it once when all rounds are done
+            bool inFree = gameManager != null && gameManager.isInFreeSpins;
+            if (!inFree && ((gameManager != null && gameManager.isAutoPlaying) || autoPlayEndPending))
+                autoPlayWinTotal += result.winAmount;
+
+            if (autoPlayEndPending) { autoPlayEndPending = false; ShowAutoPlayTotal(); }
+            else ShowBottomWin(displayWin);
         }
         UpdateBalanceDisplay();
 
@@ -895,6 +911,13 @@ public class UIManager : MonoBehaviour
         SetButtonActive(autoSpinStopButton, autoSpinStopButtonPortrait, false);
 
         bool isRoundActive = gameManager.IsSpinning() || gameManager.lastResult != null;
+
+        // FF: All autospin rounds done -> count up the session total.
+        // Paused for free games -> keep the total (autospin resumes after).
+        // Stopped mid-spin -> show it when that spin completes.
+        if (gameManager.isInFreeSpins) { }
+        else if (isRoundActive) autoPlayEndPending = true;
+        else ShowAutoPlayTotal();
 
         if (!isRoundActive && !gameManager.isInFreeSpins)
         {
@@ -1242,7 +1265,7 @@ public class UIManager : MonoBehaviour
         SetFreeGameMode(true);
 
         UpdateFreeSpinCount(0, spinsAwarded);
-        UpdateWinDisplay(0);
+        ResetWinDisplay();
         gameManager.StartFirstFreeSpin();
     }
 
@@ -1352,6 +1375,7 @@ public class UIManager : MonoBehaviour
     {
         initialFreeSpins = 0;
         totalFreeSpinsAwarded = 0;
+        if (gameManager != null && gameManager.ShouldResumeAutoPlay()) autoPlayWinTotal += serverTotalRoundWin; // FF: free games won inside autospin count to its total
 
         ShowUniversalWinPopup(WinPopupType.FreeSpinComplete, serverTotalRoundWin, 0, () =>
         {
@@ -1364,47 +1388,38 @@ public class UIManager : MonoBehaviour
             // FF: Task 2 - One switch for free-game mode
             SetFreeGameMode(false);
 
-            StartCoroutine(EndFreeSpinsTransitionSequence());
+            StartCoroutine(EndFreeSpinsTransitionSequence(serverTotalRoundWin));
         });
     }
 
-    private IEnumerator EndFreeSpinsTransitionSequence()
+    private IEnumerator EndFreeSpinsTransitionSequence(double freeGamesTotalWin = 0)
     {
-        // 1. Fade in back film
-        if (transitionBackFilm != null)
-        {
-            transitionBackFilm.gameObject.SetActive(true);
-            transitionBackFilm.alpha = 0f;
-            yield return transitionBackFilm.DOFade(1f, 0.5f).WaitForCompletion();
-            yield return new WaitForSeconds(0.2f);
-        }
+        // FF: No black-film fade here (CNY leftover). The switch back to the base game is instant,
+        // the same as the start of free games.
+        if (transitionBackFilm != null) transitionBackFilm.gameObject.SetActive(false);
 
-        // 2. Setup main slot UI state behind back film
+        // Setup main slot UI state
         if (freeSpinCountContainer) freeSpinCountContainer.SetActive(false);
         if (gameLogoObject) gameLogoObject.SetActive(true);
 
-        // Reset win display for base game after free spins end
-        UpdateWinDisplay(0);
+        // FF: After free games, count the bottom win up 0 -> free-games total (stays until the next spin resets it)
+        ResetWinDisplay();
+        if (freeGamesTotalWin > 0) AnimateWinUpdate(freeGamesTotalWin, bottomWinCountUpDuration);
 
         SetSpinStopButtonStates(isSpinningState: false, isInteractable: true);
         SetButtonInteractable(settingsOpenButton, settingsOpenButtonPortrait, true);
         SetBetControlsEnabled(true);
 
-        // 3. Fade out back film
-        if (transitionBackFilm != null)
-        {
-            yield return transitionBackFilm.DOFade(0f, 0.5f).WaitForCompletion();
-            transitionBackFilm.gameObject.SetActive(false);
-        }
+        yield return null;
 
-        // 4. Resume autoplay if it was active before free spins and has leftover rounds
+        // Resume autoplay if it was active before free spins and has leftover rounds
         if (gameManager != null && gameManager.ShouldResumeAutoPlay())
         {
             gameManager.ResumeAutoPlay();
         }
     }
 
-    // FF: Task 2b & Task 4 - Header "FREE {remaining} SPINS" counting down
+    // FF: Free spins header - only the remaining number (sprite digits); "FREE" and "SPINS" are images
     internal void UpdateFreeSpinCount(int playedSpins, int totalSpins = -1)
     {
         if (totalSpins > 0)
@@ -1417,7 +1432,7 @@ public class UIManager : MonoBehaviour
             : playedSpins;
 
         if (freeSpinCountContainer) freeSpinCountContainer.SetActive(true);
-        if (remainingFreeSpinsText) remainingFreeSpinsText.text = $"FREE {remaining} SPINS";
+        if (remainingFreeSpinsText) remainingFreeSpinsText.text = ToSpriteDigits(remaining.ToString()); // FF: number only, sprite digits (FREE / SPINS are images)
         // FF: Play free spin tick sound on counter update
         AudioManager.Instance?.PlayFreeSpinTick();
     }
@@ -1425,7 +1440,7 @@ public class UIManager : MonoBehaviour
     public void UpdateFreeSpinRemainingCount(int remaining)
     {
         if (freeSpinCountContainer) freeSpinCountContainer.SetActive(true);
-        if (remainingFreeSpinsText) remainingFreeSpinsText.text = $"FREE {remaining} SPINS";
+        if (remainingFreeSpinsText) remainingFreeSpinsText.text = ToSpriteDigits(remaining.ToString()); // FF: number only, sprite digits (FREE / SPINS are images)
         // FF: Play free spin tick sound on counter update
         AudioManager.Instance?.PlayFreeSpinTick();
     }
@@ -1569,7 +1584,7 @@ public class UIManager : MonoBehaviour
         if (winAmountText) winAmountText.text = FormatAmount(amount);
         if (winAmountTextPortrait) winAmountTextPortrait.text = "WIN " + FormatAmount(amount);
 
-        bool showWinText = amount > 0 || (gameManager != null && gameManager.isInFreeSpins);
+        bool showWinText = amount > 0; // FF: Good Luck while 0 (also during free spins / autospin rounds)
 
         if (showWinText)
         {
@@ -1589,8 +1604,62 @@ public class UIManager : MonoBehaviour
         SetTMPText(balanceText, balanceTextPortrait, "BALANCE : " + FormatAmount(newBalance));
     }
 
+    // FF: Bottom bar win - hold while a win popup is open, otherwise count up
+    private void ShowBottomWin(double target)
+    {
+        // FF: Free spins / autospin - no per-spin count; the total counts up once when all rounds are done
+        if (autoPlayEndPending || (gameManager != null && (gameManager.isInFreeSpins || gameManager.isAutoPlaying))) return;
+
+        bool popupBusy = isSpecialWinActive || (gameManager != null && gameManager.IsWaitingForSpecialWin);
+        if (popupBusy) { pendingBottomWin = target; return; }
+        StartBottomCountUp(target);
+    }
+
+    // FF: Autospin finished - count 0 -> session total (after the popup closes if one is open)
+    private void ShowAutoPlayTotal()
+    {
+        double total = autoPlayWinTotal;
+        autoPlayWinTotal = 0;
+        if (total <= 0) return;
+
+        ResetWinDisplay();
+        bool popupBusy = isSpecialWinActive || (gameManager != null && gameManager.IsWaitingForSpecialWin);
+        if (popupBusy) pendingBottomWin = total;
+        else AnimateWinUpdate(total, bottomWinCountUpDuration);
+    }
+
+    internal void ResetAutoPlayWinTotal()
+    {
+        autoPlayWinTotal = 0;
+        autoPlayEndPending = false;
+    }
+
+    private void StartBottomCountUp(double target)
+    {
+        if (winTween != null && winTween.IsActive() && System.Math.Abs(winTweenTarget - target) < 0.001) return; // already counting to it
+        AnimateWinUpdate(target, bottomWinCountUpDuration);
+    }
+
+    // FF: Called when the win popup closes - start the held count-up
+    private void FlushPendingBottomWin()
+    {
+        if (pendingBottomWin < 0) return;
+        double t = pendingBottomWin;
+        pendingBottomWin = -1;
+        StartBottomCountUp(t);
+    }
+
+    // FF: Stop any count-up and set the bottom win to 0
+    internal void ResetWinDisplay()
+    {
+        pendingBottomWin = -1;
+        if (winTween != null) { winTween.Kill(); winTween = null; }
+        UpdateWinDisplay(0);
+    }
+
     private void AnimateWinUpdate(double targetWin, float duration = 0.8f)
     {
+        winTweenTarget = targetWin;
         if (winTween != null)
         {
             winTween.Kill();
@@ -1647,6 +1716,10 @@ public class UIManager : MonoBehaviour
         {
             totalLineCountText.text = gameManager.gameConfig.paylineCount.ToString();
         }
+        if (totalLineCountTextPortrait != null && gameManager != null && gameManager.gameConfig != null)
+        {
+            totalLineCountTextPortrait.text = gameManager.gameConfig.paylineCount.ToString();
+        }
 
         TMP_Text[] symbolTexts = {
             ruleSymbol0Text, ruleSymbol1Text, ruleSymbol2Text, ruleSymbol3Text,
@@ -1670,7 +1743,7 @@ public class UIManager : MonoBehaviour
                     for (int m = 0; m < symbol.multipliers.Count; m++)
                     {
                         double win = symbol.multipliers[m];
-                        string line = $"{currentMatch}     {win.ToString("0.###")}";
+                        string line = $"{currentMatch}   {win.ToString("0.###")}"; // FF: 3 spaces = paytable column gap (BIZ UD Mincho, monospace digits)
                         if (m == 0) fullText = line;
                         else fullText += $"\n{line}";
                         
@@ -1853,26 +1926,8 @@ public class UIManager : MonoBehaviour
                     {
                         uwpWinAmountText.gameObject.SetActive(true);
                         uwpWinAmountText.text = ToSpriteDigits(FormatAmount(winAmount));
-                        RectTransform bigWinAmountRect = uwpWinAmountText.GetComponent<RectTransform>();
-                        if (bigWinAmountRect != null)
-                        {
-                            Vector2 pos = bigWinAmountRect.anchoredPosition;
-                            pos.y = 0f;
-                            bigWinAmountRect.anchoredPosition = pos;
-                        }
                     }
                     break;
-            }
-
-            if (type != WinPopupType.BigWin && uwpWinAmountText)
-            {
-                RectTransform winAmountRect = uwpWinAmountText.GetComponent<RectTransform>();
-                if (winAmountRect != null)
-                {
-                    Vector2 pos = winAmountRect.anchoredPosition;
-                    pos.y = -90f;
-                    winAmountRect.anchoredPosition = pos;
-                }
             }
         }
         else if (type == WinPopupType.FreeSpinTrigger)
@@ -1912,6 +1967,7 @@ public class UIManager : MonoBehaviour
             openCg.DOKill();
             openCg.alpha = 0f;
             openCg.DOFade(1f, popupFadeDuration).SetEase(Ease.OutQuad);
+            SetPopupDim(true, false); // FF: dim the game behind the panel
         }
 
 
@@ -1921,7 +1977,7 @@ public class UIManager : MonoBehaviour
 
             targetAmountText.text = ToSpriteDigits((0.0).ToString(formatStr));
 
-            float countUpDuration = (type == WinPopupType.BigWin) ? 1.5f : 1.0f;
+            float countUpDuration = (type == WinPopupType.BigWin) ? countUpDurationBigWin : countUpDurationNormal;
 
             // FF: Start win count-up loop
             AudioManager.Instance?.StartCountUpLoop();
@@ -1961,6 +2017,32 @@ public class UIManager : MonoBehaviour
 
     [Header("FF: Popup Fade")]
     [SerializeField] private float popupFadeDuration = 0.3f;
+    [SerializeField] private CanvasGroup popupDim; // FF: black dim behind the 3 win panels (SlotBG/PopupDim)
+
+    // FF: show/hide the dim behind the panels. instant = no fade (used when the panel is closed at once)
+    private void SetPopupDim(bool on, bool instant)
+    {
+        if (popupDim == null) return;
+        popupDim.DOKill();
+        if (on)
+        {
+            popupDim.gameObject.SetActive(true);
+            popupDim.alpha = 0f;
+            popupDim.DOFade(1f, popupFadeDuration).SetEase(Ease.OutQuad);
+        }
+        else if (instant)
+        {
+            popupDim.alpha = 0f;
+            popupDim.gameObject.SetActive(false);
+        }
+        else
+        {
+            popupDim.DOFade(0f, popupFadeDuration).SetEase(Ease.InQuad)
+                .OnComplete(() => { if (popupDim != null) popupDim.gameObject.SetActive(false); });
+        }
+    }
+    [SerializeField] private float countUpDurationNormal = 0.8f; // win amount count-up in YOU WIN
+    [SerializeField] private float countUpDurationBigWin = 1.2f; // win amount count-up in BIG WIN
 
     private CanvasGroup GetPopupCanvasGroup(GameObject popup)
     {
@@ -2039,17 +2121,20 @@ public class UIManager : MonoBehaviour
             animRect.localScale = Vector3.one;
             CanvasGroup closeCg = GetPopupCanvasGroup(closingGO);
             closeCg.DOKill();
+            SetPopupDim(false, false); // FF: fade the dim out together with the panel
             closeCg.DOFade(0f, popupFadeDuration).SetEase(Ease.InQuad).OnComplete(() =>
             {
                 if (universalWinPopup) universalWinPopup.SetActive(false);
                 if (freeGamesAwardPopup) freeGamesAwardPopup.SetActive(false);
                 if (bigWinPopup) bigWinPopup.SetActive(false);
+                SetPopupDim(false, true);
                 currentPopupGO = null;
                 currentPopupRect = null;
 
                 SetButtonActive(uwpTakeButton, uwpTakeButtonPortrait, false);
                 isSpecialWinActive = false;
                 EnableControlsAfterWinAnimation();
+                FlushPendingBottomWin(); // FF: bottom win counts up after the popup closes
 
                 callback?.Invoke();
             });
@@ -2059,12 +2144,14 @@ public class UIManager : MonoBehaviour
             if (universalWinPopup) universalWinPopup.SetActive(false);
             if (freeGamesAwardPopup) freeGamesAwardPopup.SetActive(false);
             if (bigWinPopup) bigWinPopup.SetActive(false);
+            SetPopupDim(false, true);
             currentPopupGO = null;
             currentPopupRect = null;
 
             SetButtonActive(uwpTakeButton, uwpTakeButtonPortrait, false);
             isSpecialWinActive = false;
             EnableControlsAfterWinAnimation();
+            FlushPendingBottomWin(); // FF: bottom win counts up after the popup closes
 
             callback?.Invoke();
         }

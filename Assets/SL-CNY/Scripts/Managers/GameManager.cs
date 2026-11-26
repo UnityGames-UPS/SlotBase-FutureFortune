@@ -24,6 +24,11 @@ public class GameManager : MonoBehaviour
 
     [Header("Win Settings")]
     [SerializeField] private double bigWinMultiplierThreshold = 500.0;
+
+    [Header("FF: Popup Timing")]
+    [SerializeField] private float bigWinPopupDelay = 0.8f;      // after reels stop, before BIG WIN opens
+    [SerializeField] private float scatterTriggerWait = 2.0f;    // Bonus animation before Free Games Awarded
+    [SerializeField] private bool skipWinAnimOnLastFreeSpin = true; // YOU WIN opens right after the last free spin
     public double BigWinMultiplierThreshold => bigWinMultiplierThreshold;
 
     internal GameConfig gameConfig;
@@ -54,6 +59,7 @@ public class GameManager : MonoBehaviour
     private Coroutine spinCoroutine;
     private bool stopRequested;
     private bool waitingForSpecialWin;
+    internal bool IsWaitingForSpecialWin => waitingForSpecialWin; // FF: UIManager holds the bottom win count-up until the popup closes
 
     // FF: Nudge synchronization flags, references, and coroutines
     [SerializeField] private bool debugNudge = true; // FF: Task 3 - Debug nudge aid
@@ -483,7 +489,14 @@ public class GameManager : MonoBehaviour
                 uiManager.DisableControlsDuringWinAnimation();
                 currentState = GameState.Idle;
                 slotView.ShowWinLineAnimation(lastResult.winLines, OnWinAnimationComplete);
-                StartCoroutine(TriggerWinPopupWithDelay(1.5f, lastResult));
+                StartCoroutine(TriggerWinPopupWithDelay(bigWinPopupDelay, lastResult));
+            }
+            else if (skipWinAnimOnLastFreeSpin && isInFreeSpins && lastResult.isRoundOver)
+            {
+                // FF: Last free spin - no win animation, go straight to the YOU WIN panel
+                uiManager.OnSpinStopping(lastResult);
+                currentState = GameState.Idle;
+                OnWinAnimationComplete();
             }
             else
             {
@@ -624,7 +637,7 @@ public class GameManager : MonoBehaviour
         slotView.AnimateAllScatters(4);
 
         // Wait for scatter hit animations to play
-        yield return new WaitForSeconds(3.5f);
+        yield return new WaitForSeconds(scatterTriggerWait);
         ProcessSpinResult();
     }
 
@@ -1020,6 +1033,7 @@ public class GameManager : MonoBehaviour
         autoPlayRemainingRounds = rounds;
         wasAutoPlayingBeforeFreeSpins = false;
 
+        uiManager.ResetAutoPlayWinTotal(); // FF: new autospin session - start the total from 0
         uiManager.OnAutoPlayStarted();
         RequestSpin();
     }

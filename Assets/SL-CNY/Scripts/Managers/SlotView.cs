@@ -868,7 +868,7 @@ public class SlotView : MonoBehaviour
 
             stopSequence.Append(
                 slotTransform.DOLocalMoveY(middlePosition, stopSettleDuration)
-                    .SetEase(Ease.InOutQuad)
+                    .SetEase(Ease.OutBack) // FF: small spring-back rebound after the overshoot
             );
 
             stopSequence.OnComplete(() => PlayStopAnimationsForColumn(columnIndex));
@@ -1152,16 +1152,11 @@ public class SlotView : MonoBehaviour
         // FF: No middle "total win" text - the bottom WIN box shows the total; only per-line amounts on cells
         ClearWinAmountText();
 
-        // FF: Task 2A - Show win amount text on the last winning cell of each winning line in Phase 1
-        foreach (var winLine in winLines)
+        // FF: Show the TOTAL win once, on the first winning line's reel-3 cell (clears itself after winAmountShowTime)
+        if (winLines.Count > 0 && winLines[0].positions != null && winLines[0].positions.Count > 0)
         {
-            if (winLine.positions != null && winLine.positions.Count > 0)
-            {
-                int lastFlatIndex = GetWinTextCell(winLine);
-                int lastRow = lastFlatIndex / 5;
-                int lastCol = lastFlatIndex % 5;
-                ShowWinLineTextOnIcon(lastCol, lastRow, winLine.winAmount);
-            }
+            int textCell = GetWinTextCell(winLines[0]);
+            ShowWinLineTextOnIcon(textCell % 5, textCell / 5, totalWinAmount);
         }
 
         // FF: Win presentation sound: big win vs small win based on GameManager threshold
@@ -1217,11 +1212,7 @@ public class SlotView : MonoBehaviour
                 KillWinTweens(false);
                 HideAllWinLineTexts();
 
-                // FF: Task 2A - Show WinLineText on the last icon of the active win line (single or multiple lines)
-                int lastFlatIndex = GetWinTextCell(winLine);
-                int lastRow = lastFlatIndex / 5;
-                int lastCol = lastFlatIndex % 5;
-                ShowWinLineTextOnIcon(lastCol, lastRow, winLine.winAmount);
+                // FF: No win amount in the Phase 2 loop - the amount is shown only once (Phase 1)
 
                 // Animate win line symbols and wait for their ImageAnimation loops to complete
                 yield return StartCoroutine(AnimateWinPositions(winLine.positions));
@@ -1439,7 +1430,10 @@ public class SlotView : MonoBehaviour
     // sprite digits, and cleared after winAmountShowTime. No SetActive - the object always stays active.
     private void ShowWinLineTextOnIcon(int col, int row, double winAmount)
     {
+        // FF: no win amount on the reels during autoplay
+        if (gameManager != null && gameManager.isAutoPlaying) return;
         if (winAmountText == null) return;
+
         if (col < 0 || col >= reelImagesList.Count) return;
         var reel = reelImagesList[col];
         if (reel.images == null) return;
@@ -1456,12 +1450,12 @@ public class SlotView : MonoBehaviour
         winAmountText.text = ToSpriteDigits(winAmount.ToString("0.00"));
 
         // Small pop (own tween, not in winTweens, so killing win tweens never leaves it at scale 0)
-        textTransform.DOKill();
+       /* textTransform.DOKill();
         textTransform.localScale = Vector3.zero;
         DOTween.Sequence()
             .Append(textTransform.DOScale(1.2f, 0.15f).SetEase(Ease.OutQuad))
             .Append(textTransform.DOScale(1f, 0.10f).SetEase(Ease.InQuad))
-            .SetTarget(textTransform);
+            .SetTarget(textTransform);*/
 
         winAmountClearRoutine = StartCoroutine(ClearWinAmountTextAfter(winAmountShowTime));
     }
@@ -1559,13 +1553,9 @@ public class SlotView : MonoBehaviour
         var go = WinBox(winBoxColumns, col, row);
         if (go)
         {
-            // FF: Task 2A - Ensure parent column and grandparent WinBoxOverlay are active
+            // FF: Ensure the column parent is active (WinBoxOverlay itself stays always on)
             if (go.transform.parent != null)
             {
-                if (go.transform.parent.parent != null)
-                {
-                    go.transform.parent.parent.gameObject.SetActive(true);
-                }
                 go.transform.parent.gameObject.SetActive(true);
             }
             go.SetActive(true);
@@ -1597,19 +1587,11 @@ public class SlotView : MonoBehaviour
         if (go) go.SetActive(false);
     }
 
-    // FF: Task 2A & Task 1 - Stop all 15 W_Frame spines, disable all win box columns, and hide grandparent WinBoxOverlay
+    // FF: Task 2A & Task 1 - Stop all 15 W_Frame spines, and disable all win boxes (WinBoxOverlay stays on)
     private void DisableWinBoxColumns()
     {
         StopAllWinBoxFrameSpines();
-        DisableColumns(winBoxColumns);
-        if (winBoxColumns != null && winBoxColumns.Length > 0 && winBoxColumns[0]?.rows != null && winBoxColumns[0].rows.Length > 0)
-        {
-            var firstBox = winBoxColumns[0].rows[0];
-            if (firstBox != null && firstBox.transform.parent != null && firstBox.transform.parent.parent != null)
-            {
-                firstBox.transform.parent.parent.gameObject.SetActive(false);
-            }
-        }
+        DisableColumns(winBoxColumns); // FF: only the boxes go off; WinBoxOverlay (with the nudge box frame) stays on
     }
 
     private void ResetSymbolScale(int col, int row)
@@ -1950,6 +1932,13 @@ public class SlotView : MonoBehaviour
     private UnityEngine.UI.Mask nudgeBoxMask;
     private UnityEngine.UI.Image nudgeBoxImage;
 
+    // FF: same clip box over the win frames of reels 3-4 (WinBoxOverlay/NuggetPlaceWinBox/SlotParent)
+    [SerializeField] private UnityEngine.UI.Mask nudgeBoxWinMask;
+    [SerializeField] private UnityEngine.UI.Image nudgeBoxWinImage;
+    // FF: the visible nudge box frame art (WinBoxOverlay/NuggetPlaceWinBox Image) - drawn above reels and win frames.
+    // SlotHolder/nugget place keeps its Image OFF (it would draw under the symbols).
+    [SerializeField] private UnityEngine.UI.Image nudgeBoxFrame;
+
     private void SetNudgeBoxMask(bool baseGame)
     {
         if (nudgeBoxMask == null && reelImagesList != null && reelImagesList.Count > 3
@@ -1961,6 +1950,9 @@ public class SlotView : MonoBehaviour
         }
         if (nudgeBoxMask != null) nudgeBoxMask.enabled = baseGame;
         if (nudgeBoxImage != null) nudgeBoxImage.enabled = baseGame;
+        if (nudgeBoxWinMask != null) nudgeBoxWinMask.enabled = baseGame;
+        if (nudgeBoxWinImage != null) nudgeBoxWinImage.enabled = baseGame;
+        if (nudgeBoxFrame != null) nudgeBoxFrame.enabled = baseGame;
     }
 
     internal void SetFreeGameLayout(bool full)
